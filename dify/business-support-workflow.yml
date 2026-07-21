@@ -1,0 +1,316 @@
+app:
+  description: >-
+    面向企业商务服务的受控工作流。先分类，再检索；高风险问题检查统一平台状态，
+    无知识依据时只生成待人工核验的转交说明。
+  icon: "🤖"
+  icon_background: "#E0F2FE"
+  mode: workflow
+  name: 东软智慧商务客服助手
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.3.0
+workflow:
+  conversation_variables: []
+  environment_variables:
+    - description: FastAPI 服务根地址，例如受控测试环境的 https://business-ai.example.com
+      id: platform-api-base-url
+      name: PLATFORM_API_BASE_URL
+      selector:
+        - env
+        - PLATFORM_API_BASE_URL
+      value: ""
+      value_type: string
+  features:
+    file_upload:
+      enabled: false
+  graph:
+    edges:
+      - data: {isInLoop: false, sourceType: start, targetType: question-classifier}
+        id: start-classifier
+        source: start
+        sourceHandle: source
+        target: classifier
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: question-classifier, targetType: http-request}
+        id: classifier-risk-health
+        source: classifier
+        sourceHandle: high_risk
+        target: health_check
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: question-classifier, targetType: knowledge-retrieval}
+        id: classifier-general-retrieval
+        source: classifier
+        sourceHandle: general
+        target: retrieval
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: http-request, targetType: knowledge-retrieval}
+        id: health-retrieval
+        source: health_check
+        sourceHandle: source
+        target: retrieval
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: http-request, targetType: code}
+        id: health-handoff
+        source: health_check
+        sourceHandle: fail-branch
+        target: safe_handoff
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: knowledge-retrieval, targetType: code}
+        id: retrieval-evidence
+        source: retrieval
+        sourceHandle: source
+        target: evidence_gate
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: code, targetType: if-else}
+        id: evidence-branch
+        source: evidence_gate
+        sourceHandle: source
+        target: evidence_branch
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: if-else, targetType: llm}
+        id: branch-answerer
+        source: evidence_branch
+        sourceHandle: evidence_available
+        target: answerer
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: if-else, targetType: code}
+        id: branch-handoff
+        source: evidence_branch
+        sourceHandle: "false"
+        target: safe_handoff
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: llm, targetType: end}
+        id: answerer-end
+        source: answerer
+        sourceHandle: source
+        target: answer_end
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: code, targetType: end}
+        id: handoff-end
+        source: safe_handoff
+        sourceHandle: source
+        target: handoff_end
+        targetHandle: target
+        type: custom
+        zIndex: 0
+    nodes:
+      - data:
+          desc: 接收用户提出的商务咨询。
+          selected: false
+          title: 开始
+          type: start
+          variables:
+            - label: 用户问题
+              max_length: 4000
+              options: []
+              required: true
+              type: paragraph
+              variable: query
+        height: 108
+        id: start
+        position: {x: 60, y: 300}
+        positionAbsolute: {x: 60, y: 300}
+        type: custom
+        width: 244
+      - data:
+          classes:
+            - id: high_risk
+              name: 合同、付款、订单、账户、系统故障或其他高风险事项
+            - id: general
+              name: 有明确企业知识依据的一般咨询
+          desc: 仅做风险路由，不把分类结果当作业务事实。
+          instruction: >-
+            合同、付款、订单、账户、个人信息和系统故障归入 high_risk；
+            其他企业制度咨询归入 general。无法判断时归入 high_risk。
+          model:
+            completion_params: {temperature: 0}
+            mode: chat
+            name: qwen3.7-max
+            provider: langgenius/tongyi/tongyi
+          query_variable_selector: [start, query]
+          selected: false
+          title: 问题风险分类
+          type: question-classifier
+        height: 190
+        id: classifier
+        position: {x: 360, y: 300}
+        positionAbsolute: {x: 360, y: 300}
+        type: custom
+        width: 244
+      - data:
+          authorization: {config: null, type: no-auth}
+          body: {data: [], type: none}
+          desc: 高风险分支只读检查统一 FastAPI 服务是否可用，不读取客户记录。
+          error_strategy: fail-branch
+          headers: "Accept: application/json"
+          method: get
+          params: ""
+          retry_config: {max_retries: 2, retry_enabled: true, retry_interval: 200}
+          selected: false
+          timeout: {connect: 5, max_connect_timeout: 5, max_read_timeout: 10, max_write_timeout: 10, read: 10, write: 10}
+          title: 平台健康检查
+          type: http-request
+          url: "{{#env.PLATFORM_API_BASE_URL#}}/api/v1/health"
+        height: 150
+        id: health_check
+        position: {x: 670, y: 170}
+        positionAbsolute: {x: 670, y: 170}
+        type: custom
+        width: 244
+      - data:
+          dataset_ids:
+            - 00000000-0000-0000-0000-000000000000
+          desc: 导入后必须在 Dify 控制台绑定经批准的企业知识库。
+          multiple_retrieval_config: {reranking_enable: false, top_k: 3}
+          query_variable_selector: [start, query]
+          retrieval_mode: multiple
+          selected: false
+          title: 企业知识检索
+          type: knowledge-retrieval
+        height: 150
+        id: retrieval
+        position: {x: 980, y: 300}
+        positionAbsolute: {x: 980, y: 300}
+        type: custom
+        width: 244
+      - data:
+          code: |
+            def main(retrieval_result):
+                items = retrieval_result if isinstance(retrieval_result, list) else []
+                usable = [item for item in items if isinstance(item, dict) and item.get("content")]
+                return {"has_evidence": bool(usable), "evidence_count": len(usable)}
+          code_language: python3
+          desc: 只判断检索结果是否包含可用正文，不生成或补造证据。
+          outputs:
+            evidence_count: {type: number}
+            has_evidence: {type: boolean}
+          selected: false
+          title: 检索证据检查
+          type: code
+          variables:
+            - value_selector: [retrieval, result]
+              variable: retrieval_result
+        height: 150
+        id: evidence_gate
+        position: {x: 1290, y: 300}
+        positionAbsolute: {x: 1290, y: 300}
+        type: custom
+        width: 244
+      - data:
+          cases:
+            - case_id: evidence_available
+              conditions:
+                - comparison_operator: is
+                  id: evidence-present
+                  value: true
+                  varType: boolean
+                  variable_selector: [evidence_gate, has_evidence]
+              logical_operator: and
+          desc: 有来源才进入生成；无来源直接转人工。
+          selected: false
+          title: 证据条件路由
+          type: if-else
+        height: 150
+        id: evidence_branch
+        position: {x: 1600, y: 300}
+        positionAbsolute: {x: 1600, y: 300}
+        type: custom
+        width: 244
+      - data:
+          context:
+            enabled: true
+            variable_selector: [retrieval, result]
+          desc: 基于知识片段生成受约束的客服答复。
+          model:
+            completion_params: {temperature: 0.2}
+            mode: chat
+            name: qwen3.7-max
+            provider: langgenius/tongyi/tongyi
+          prompt_template:
+            - role: system
+              text: >-
+                你是企业商务服务助手。只依据提供的企业知识回答，不能编造订单、价格、
+                合同、付款或个人信息。先给结论，再给依据和下一步；高风险事项必须提示人工复核。
+            - role: user
+              text: "用户问题：{{#start.query#}}\n\n检索知识：{{#context#}}"
+          selected: false
+          title: 合规回复生成
+          type: llm
+          vision: {enabled: false}
+        height: 180
+        id: answerer
+        position: {x: 1910, y: 190}
+        positionAbsolute: {x: 1910, y: 190}
+        type: custom
+        width: 244
+      - data:
+          code: |
+            def main(query):
+                return {
+                    "answer": "当前企业知识库没有足够依据确认该问题。已转入人工核验流程，请勿提交密码、完整证件号或其他敏感信息。"
+                }
+          code_language: python3
+          desc: 明确标识无依据，不调用外部写操作，也不承诺处理结果。
+          outputs:
+            answer: {type: string}
+          selected: false
+          title: 安全人工转交
+          type: code
+          variables:
+            - value_selector: [start, query]
+              variable: query
+        height: 150
+        id: safe_handoff
+        position: {x: 1910, y: 430}
+        positionAbsolute: {x: 1910, y: 430}
+        type: custom
+        width: 244
+      - data:
+          desc: 返回有检索依据的模型答复。
+          outputs:
+            - value_selector: [answerer, text]
+              variable: answer
+          selected: false
+          title: 回答结束
+          type: end
+        height: 108
+        id: answer_end
+        position: {x: 2220, y: 190}
+        positionAbsolute: {x: 2220, y: 190}
+        type: custom
+        width: 244
+      - data:
+          desc: 返回明确的人工核验说明。
+          outputs:
+            - value_selector: [safe_handoff, answer]
+              variable: answer
+          selected: false
+          title: 转交结束
+          type: end
+        height: 108
+        id: handoff_end
+        position: {x: 2220, y: 430}
+        positionAbsolute: {x: 2220, y: 430}
+        type: custom
+        width: 244

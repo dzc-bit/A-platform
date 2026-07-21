@@ -1,0 +1,178 @@
+app:
+  description: 校验商务场景图片提示词，再调用受控的外部文生图 HTTP API。
+  icon: "🖼️"
+  icon_background: "#FFF3E0"
+  mode: workflow
+  name: 商务素材文生图
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.3.0
+workflow:
+  conversation_variables: []
+  environment_variables:
+    - {description: 受控文生图服务根地址, id: image-api-url, name: IMAGE_API_URL, selector: [env, IMAGE_API_URL], value: "", value_type: string}
+    - {description: 文生图服务凭据, id: image-api-key, name: IMAGE_API_KEY, selector: [env, IMAGE_API_KEY], value: "", value_type: secret}
+  features:
+    file_upload: {enabled: false}
+  graph:
+    edges:
+      - data: {isInLoop: false, sourceType: start, targetType: code}
+        id: start-prepare
+        source: start
+        sourceHandle: source
+        target: prepare_prompt
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: code, targetType: http-request}
+        id: prepare-request
+        source: prepare_prompt
+        sourceHandle: source
+        target: image_request
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: http-request, targetType: code}
+        id: request-extract
+        source: image_request
+        sourceHandle: source
+        target: extract_image
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: code, targetType: end}
+        id: extract-end
+        source: extract_image
+        sourceHandle: source
+        target: end
+        targetHandle: target
+        type: custom
+        zIndex: 0
+    nodes:
+      - data:
+          desc: 接收经授权的商务视觉提示和画幅。
+          selected: false
+          title: 开始
+          type: start
+          variables:
+            - {label: 图片提示词, max_length: 2000, options: [], required: true, type: paragraph, variable: prompt}
+            - {label: 画幅, max_length: 20, options: ["2048*2048", "2688*1536", "1536*2688"], required: true, type: select, variable: size}
+        height: 140
+        id: start
+        position: {x: 80, y: 260}
+        positionAbsolute: {x: 80, y: 260}
+        type: custom
+        width: 244
+      - data:
+          code: |
+            def main(prompt, size):
+                clean = " ".join((prompt or "").split()).strip()
+                if not clean or len(clean) > 2000:
+                    raise ValueError("prompt must contain 1-2000 characters")
+                allowed_sizes = {"2048*2048", "2688*1536", "1536*2688"}
+                if size not in allowed_sizes:
+                    raise ValueError("unsupported image size")
+                return {"prompt": clean, "size": size}
+          code_language: python3
+          desc: 校验提示和画幅，不生成占位图或静态图片地址。
+          outputs:
+            prompt: {type: string}
+            size: {type: string}
+          selected: false
+          title: 提示词与画幅校验
+          type: code
+          variables:
+            - {value_selector: [start, prompt], variable: prompt}
+            - {value_selector: [start, size], variable: size}
+        height: 150
+        id: prepare_prompt
+        position: {x: 390, y: 260}
+        positionAbsolute: {x: 390, y: 260}
+        type: custom
+        width: 244
+      - data:
+          authorization: {config: null, type: no-auth}
+          body:
+            data:
+              - id: body-json
+                type: text
+                value: |-
+                  {
+                    "model": "qwen-image-2.0-pro",
+                    "input": {
+                      "messages": [
+                        {
+                          "role": "user",
+                          "content": [
+                            {"text": "{{#prepare_prompt.prompt#}}"}
+                          ]
+                        }
+                      ]
+                    },
+                    "parameters": {
+                      "size": "{{#prepare_prompt.size#}}",
+                      "n": 1,
+                      "prompt_extend": true,
+                      "watermark": false
+                    }
+                  }
+            type: json
+          desc: 调用管理员在 Dify Secret 中配置的文生图服务。
+          headers: "Authorization: Bearer {{#env.IMAGE_API_KEY#}}\nContent-Type: application/json"
+          method: post
+          params: ""
+          retry_config: {max_retries: 1, retry_enabled: true, retry_interval: 1000}
+          selected: false
+          timeout: {connect: 10, max_connect_timeout: 10, max_read_timeout: 120, max_write_timeout: 30, read: 120, write: 30}
+          title: 文生图 API 调用
+          type: http-request
+          url: "{{#env.IMAGE_API_URL#}}"
+        height: 180
+        id: image_request
+        position: {x: 700, y: 260}
+        positionAbsolute: {x: 700, y: 260}
+        type: custom
+        width: 244
+      - data:
+          code: |
+            def main(response_body):
+                import json
+                payload = json.loads(response_body) if isinstance(response_body, str) else response_body
+                output = payload.get("output") if isinstance(payload, dict) else None
+                choices = output.get("choices", []) if isinstance(output, dict) else []
+                message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+                content = message.get("content", []) if isinstance(message, dict) else []
+                url = content[0].get("image") if content and isinstance(content[0], dict) else None
+                if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                    raise ValueError("image response did not contain a downloadable image URL")
+                return {"image_url": url}
+          code_language: python3
+          desc: 从真实 Qwen-Image 响应中提取完整图片 URL，不把 task_id 当作成功结果。
+          outputs:
+            image_url: {type: string}
+          selected: false
+          title: 提取图片 URL
+          type: code
+          variables:
+            - {value_selector: [image_request, body], variable: response_body}
+        height: 150
+        id: extract_image
+        position: {x: 1010, y: 260}
+        positionAbsolute: {x: 1010, y: 260}
+        type: custom
+        width: 244
+      - data:
+          desc: 原样返回外部服务响应；调用方必须校验媒体类型、大小和可访问域名。
+          outputs:
+            - {value_selector: [extract_image, image_url], variable: image}
+            - {value_selector: [image_request, status_code], variable: status_code}
+          selected: false
+          title: 结束
+          type: end
+        height: 120
+        id: end
+        position: {x: 1320, y: 260}
+        positionAbsolute: {x: 1320, y: 260}
+        type: custom
+        width: 244

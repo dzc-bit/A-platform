@@ -1,0 +1,40 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+backend/.venv/
+backend/data/
+backend/tests/*.db
+
+# Node/Vite
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Runtime artifacts
+*.log
+coverage/
+playwright-report/
+test-results/
+.agents/
+.codex-qa/
+.docx-review/
+.downloads/
+.runtime/
+.workbuddy/

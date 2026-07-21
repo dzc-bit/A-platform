@@ -1,0 +1,165 @@
+app:
+  description: 对输入文本做长度与音色参数校验，再调用受控的外部 TTS HTTP API。
+  icon: "🔊"
+  icon_background: "#E8F5E9"
+  mode: workflow
+  name: 商务答复文字转语音
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.3.0
+workflow:
+  conversation_variables: []
+  environment_variables:
+    - {description: 受控 TTS 服务根地址, id: tts-api-url, name: TTS_API_URL, selector: [env, TTS_API_URL], value: "", value_type: string}
+    - {description: TTS 服务凭据, id: tts-api-key, name: TTS_API_KEY, selector: [env, TTS_API_KEY], value: "", value_type: secret}
+  features:
+    file_upload: {enabled: false}
+  graph:
+    edges:
+      - data: {isInLoop: false, sourceType: start, targetType: code}
+        id: start-prepare
+        source: start
+        sourceHandle: source
+        target: prepare_text
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: code, targetType: http-request}
+        id: prepare-request
+        source: prepare_text
+        sourceHandle: source
+        target: tts_request
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: http-request, targetType: code}
+        id: request-extract
+        source: tts_request
+        sourceHandle: source
+        target: extract_audio
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInLoop: false, sourceType: code, targetType: end}
+        id: extract-end
+        source: extract_audio
+        sourceHandle: source
+        target: end
+        targetHandle: target
+        type: custom
+        zIndex: 0
+    nodes:
+      - data:
+          desc: 接收需朗读的已审核文本和音色名称。
+          selected: false
+          title: 开始
+          type: start
+          variables:
+            - {label: 答复文本, max_length: 6000, options: [], required: true, type: paragraph, variable: text}
+            - {label: 音色, max_length: 40, options: [], required: false, type: text-input, variable: voice}
+        height: 140
+        id: start
+        position: {x: 80, y: 260}
+        positionAbsolute: {x: 80, y: 260}
+        type: custom
+        width: 244
+      - data:
+          code: |
+            def main(text, voice):
+                clean = " ".join((text or "").split()).strip()
+                if not clean or len(clean) > 6000:
+                    raise ValueError("text must contain 1-6000 characters")
+                selected_voice = (voice or "default").strip()
+                if len(selected_voice) > 40:
+                    raise ValueError("voice is too long")
+                return {"text": clean, "voice": selected_voice}
+          code_language: python3
+          desc: 只做确定性参数校验和空白规范化，不生成音频。
+          outputs:
+            text: {type: string}
+            voice: {type: string}
+          selected: false
+          title: 文本与音色校验
+          type: code
+          variables:
+            - {value_selector: [start, text], variable: text}
+            - {value_selector: [start, voice], variable: voice}
+        height: 150
+        id: prepare_text
+        position: {x: 390, y: 260}
+        positionAbsolute: {x: 390, y: 260}
+        type: custom
+        width: 244
+      - data:
+          authorization: {config: null, type: no-auth}
+          body:
+            data:
+              - id: body-json
+                type: text
+                value: |-
+                  {
+                    "model": "qwen3-tts-flash",
+                    "input": {
+                      "text": "{{#prepare_text.text#}}",
+                      "voice": "{{#prepare_text.voice#}}",
+                      "language_type": "Chinese"
+                    }
+                  }
+            type: json
+          desc: 调用管理员在 Dify Secret 中配置的 TTS 服务。
+          headers: "Authorization: Bearer {{#env.TTS_API_KEY#}}\nContent-Type: application/json"
+          method: post
+          params: ""
+          retry_config: {max_retries: 2, retry_enabled: true, retry_interval: 500}
+          selected: false
+          timeout: {connect: 10, max_connect_timeout: 10, max_read_timeout: 60, max_write_timeout: 30, read: 60, write: 30}
+          title: TTS API 调用
+          type: http-request
+          url: "{{#env.TTS_API_URL#}}"
+        height: 180
+        id: tts_request
+        position: {x: 700, y: 260}
+        positionAbsolute: {x: 700, y: 260}
+        type: custom
+        width: 244
+      - data:
+          code: |
+            def main(response_body):
+                import json
+                payload = json.loads(response_body) if isinstance(response_body, str) else response_body
+                output = payload.get("output") if isinstance(payload, dict) else None
+                audio = output.get("audio") if isinstance(output, dict) else None
+                url = audio.get("url") if isinstance(audio, dict) else None
+                if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                    raise ValueError("TTS response did not contain a downloadable audio URL")
+                return {"audio_url": url}
+          code_language: python3
+          desc: 从真实 TTS 响应中提取完整签名 URL，避免把后续 JSON 文本拼进链接。
+          outputs:
+            audio_url: {type: string}
+          selected: false
+          title: 提取音频 URL
+          type: code
+          variables:
+            - {value_selector: [tts_request, body], variable: response_body}
+        height: 150
+        id: extract_audio
+        position: {x: 1010, y: 260}
+        positionAbsolute: {x: 1010, y: 260}
+        type: custom
+        width: 244
+      - data:
+          desc: 原样返回外部服务响应；调用方必须校验媒体类型、大小和可访问域名。
+          outputs:
+            - {value_selector: [extract_audio, audio_url], variable: audio}
+            - {value_selector: [tts_request, status_code], variable: status_code}
+          selected: false
+          title: 结束
+          type: end
+        height: 120
+        id: end
+        position: {x: 1320, y: 260}
+        positionAbsolute: {x: 1320, y: 260}
+        type: custom
+        width: 244

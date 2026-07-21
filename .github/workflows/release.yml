@@ -1,0 +1,196 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/neusoft-business-ai-backend
+  FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/neusoft-business-ai-frontend
+  KUBE_NAMESPACE: business-ai
+
+jobs:
+  verify:
+    name: Verify release candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        working-directory: backend
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Compile, test, and evaluate backend
+        working-directory: backend
+        run: |
+          python -m compileall -q app scripts
+          python -m pytest -q
+          python scripts/evaluate_agent.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.31.0"
+      - name: Validate deployment inputs
+        run: |
+          docker compose --env-file .env.example config -q
+          kubectl kustomize deploy/k8s > "$RUNNER_TEMP/business-ai.yaml"
+
+  publish:
+    name: Publish ${{ matrix.component }} image
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component:
+          - backend
+          - frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push immutable image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.component }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/neusoft-business-ai-${{ matrix.component }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+          provenance: true
+          sbom: true
+
+  deploy:
+    name: Deploy protected production environment
+    needs: publish
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.DEPLOYMENT_URL }}
+    concurrency:
+      group: business-ai-production
+      cancel-in-progress: false
+    env:
+      KUBECONFIG: ${{ runner.temp }}/kubeconfig
+      DEPLOYMENT_URL: ${{ vars.DEPLOYMENT_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.31.0"
+      - uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "5.4.3"
+      - name: Configure cluster credentials
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+        run: |
+          if [ -z "$KUBE_CONFIG_DATA" ]; then
+            echo "::error::The protected production environment must provide a base64-encoded KUBE_CONFIG_DATA secret."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 --decode > "$KUBECONFIG"
+          kubectl config current-context
+      - name: Prepare immutable release manifests
+        run: |
+          cp -R deploy/k8s "$RUNNER_TEMP/release-manifests"
+          cd "$RUNNER_TEMP/release-manifests"
+          kustomize edit set image \
+            ghcr.io/your-org/neusoft-business-ai-backend=${BACKEND_IMAGE}:${GITHUB_SHA} \
+            ghcr.io/your-org/neusoft-business-ai-frontend=${FRONTEND_IMAGE}:${GITHUB_SHA}
+          kustomize build . > "$RUNNER_TEMP/release.yaml"
+      - name: Verify cluster prerequisites
+        run: |
+          kubectl apply -f deploy/k8s/namespace.yaml
+          if [ -z "$DEPLOYMENT_URL" ]; then
+            echo "::error::The protected production environment must provide DEPLOYMENT_URL."
+            exit 1
+          fi
+          kubectl -n "$KUBE_NAMESPACE" get secret business-ai-secrets > /dev/null
+          kubectl -n "$KUBE_NAMESPACE" get secret ghcr-pull-secret > /dev/null
+          kubectl -n "$KUBE_NAMESPACE" get secret business-ai-tls > /dev/null
+          encoded_token_secret="$(kubectl -n "$KUBE_NAMESPACE" get secret business-ai-secrets -o jsonpath='{.data.TOKEN_SECRET}')"
+          if [ -z "$encoded_token_secret" ]; then
+            echo "::error::business-ai-secrets must contain TOKEN_SECRET."
+            exit 1
+          fi
+          token_secret="$(printf '%s' "$encoded_token_secret" | base64 --decode)"
+          if [ -z "$token_secret" ] || [ "$token_secret" = "change-this-before-production" ] || [ "$token_secret" = "replace-with-a-long-random-secret" ]; then
+            echo "::error::TOKEN_SECRET must be a non-placeholder production value."
+            exit 1
+          fi
+          unset encoded_token_secret token_secret
+      - name: Apply release and wait for rollouts
+        run: |
+          for deployment in business-ai-backend business-ai-frontend; do
+            kubectl -n "$KUBE_NAMESPACE" get deployment/"$deployment" -o jsonpath='{.metadata.generation}' \
+              > "$RUNNER_TEMP/${deployment}.generation.before" 2>/dev/null || true
+          done
+          touch "$RUNNER_TEMP/release-apply-started"
+          kubectl apply -f "$RUNNER_TEMP/release.yaml"
+          kubectl -n "$KUBE_NAMESPACE" rollout status deployment/business-ai-redis --timeout=180s
+          kubectl -n "$KUBE_NAMESPACE" rollout status deployment/business-ai-backend --timeout=300s
+          kubectl -n "$KUBE_NAMESPACE" rollout status deployment/business-ai-frontend --timeout=180s
+      - name: Check deployed HTTP endpoints
+        run: |
+          curl --fail --show-error --silent "${DEPLOYMENT_URL%/}/api/v1/health" | python3 -c '
+          import json, sys
+          health = json.load(sys.stdin)
+          if health.get("status") != "ok":
+              raise SystemExit("deployed backend health status is not ok")
+          token = health.get("security", {}).get("token_secret", {})
+          if token.get("using_demo_default") is not False:
+              raise SystemExit("deployed backend is using the demo TOKEN_SECRET")
+          '
+          curl --fail --show-error --silent "${DEPLOYMENT_URL%/}/" > /dev/null
+      - name: Roll back application deployments on failure
+        if: failure()
+        run: |
+          if [ ! -f "$RUNNER_TEMP/release-apply-started" ]; then
+            echo "Release apply did not start; existing deployments are unchanged."
+            exit 0
+          fi
+          rollback_if_changed() {
+            deployment="$1"
+            before_file="$RUNNER_TEMP/${deployment}.generation.before"
+            if [ ! -s "$before_file" ]; then
+              echo "No previous generation recorded for $deployment; skipping rollback."
+              return
+            fi
+            before_generation="$(cat "$before_file")"
+            current_generation="$(kubectl -n "$KUBE_NAMESPACE" get deployment/"$deployment" -o jsonpath='{.metadata.generation}' 2>/dev/null || true)"
+            if [ -n "$current_generation" ] && [ "$current_generation" -gt "$before_generation" ]; then
+              kubectl -n "$KUBE_NAMESPACE" rollout undo deployment/"$deployment" || true
+              kubectl -n "$KUBE_NAMESPACE" rollout status deployment/"$deployment" --timeout=180s || true
+            fi
+          }
+          rollback_if_changed business-ai-backend
+          rollback_if_changed business-ai-frontend

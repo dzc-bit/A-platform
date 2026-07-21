@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: business-ai-config
+data:
+  DATABASE_URL: sqlite:////app/data/business_ai.db
+  CORS_ORIGINS: https://business-ai.example.com
+  TOKEN_TTL_SECONDS: "28800"
+  REDIS_URL: redis://redis:6379/0
+  REDIS_KEY_PREFIX: business-ai

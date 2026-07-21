@@ -1,0 +1,2 @@
+# Optional production integrations. The application runs without them in deterministic offline mode.
+faiss-cpu>=1.8,<2.0

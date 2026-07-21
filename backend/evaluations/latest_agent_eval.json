@@ -1,0 +1,259 @@
+{
+  "generated_at": "2026-07-17T10:21:18.196020+00:00",
+  "mode": "deterministic_offline",
+  "metrics": {
+    "classification_accuracy": {
+      "passed": 12,
+      "total": 12,
+      "rate": 1.0,
+      "threshold": 0.8,
+      "accepted": true
+    },
+    "retrieval_hit_rate": {
+      "passed": 10,
+      "total": 10,
+      "rate": 1.0,
+      "threshold": 0.8,
+      "accepted": true
+    },
+    "citation_traceability": {
+      "passed": 10,
+      "total": 10,
+      "rate": 1.0,
+      "threshold": 1.0,
+      "accepted": true
+    },
+    "core_trace_coverage": {
+      "passed": 12,
+      "total": 12,
+      "rate": 1.0,
+      "threshold": 1.0,
+      "accepted": true
+    },
+    "safe_handoff_rate": {
+      "passed": 12,
+      "total": 12,
+      "rate": 1.0,
+      "threshold": 1.0,
+      "accepted": true
+    }
+  },
+  "cases": [
+    {
+      "index": 1,
+      "question": "系统今天突然不可用了，客户无法访问服务。",
+      "expected_category": "系统故障",
+      "actual_category": "系统故障",
+      "classification_passed": true,
+      "expected_document": "商务服务响应与升级规范",
+      "retrieved_titles": [
+        "企业账户与订单查询说明",
+        "AI 助手回答边界与质检规则",
+        "商务服务响应与升级规范"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 2,
+      "question": "合同条款需要修改，应该找谁审批？",
+      "expected_category": "合同咨询",
+      "actual_category": "合同咨询",
+      "classification_passed": true,
+      "expected_document": "合同与发票办理指引",
+      "retrieved_titles": [
+        "合同与发票办理指引",
+        "AI 助手回答边界与质检规则",
+        "商务服务响应与升级规范"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 3,
+      "question": "开票时需要提供税号和抬头吗？",
+      "expected_category": "发票办理",
+      "actual_category": "发票办理",
+      "classification_passed": true,
+      "expected_document": "合同与发票办理指引",
+      "retrieved_titles": [
+        "合同与发票办理指引",
+        "企业账户与订单查询说明",
+        "AI 助手回答边界与质检规则"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 4,
+      "question": "订单现在处于什么进度，什么时候可以验收？",
+      "expected_category": "订单查询",
+      "actual_category": "订单查询",
+      "classification_passed": true,
+      "expected_document": "企业账户与订单查询说明",
+      "retrieved_titles": [
+        "合同与发票办理指引",
+        "商务服务响应与升级规范",
+        "企业账户与订单查询说明"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 5,
+      "question": "账号密码忘记了，邮箱也没有收到重置链接。",
+      "expected_category": "账户访问",
+      "actual_category": "账户访问",
+      "classification_passed": true,
+      "expected_document": "企业账户与订单查询说明",
+      "retrieved_titles": [
+        "企业账户与订单查询说明",
+        "商务服务响应与升级规范",
+        "合同与发票办理指引"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 6,
+      "question": "已经付款后可以提现吗，退款流程是什么？",
+      "expected_category": "付款咨询",
+      "actual_category": "付款咨询",
+      "classification_passed": true,
+      "expected_document": null,
+      "retrieved_titles": [
+        "商务服务响应与升级规范",
+        "AI 助手回答边界与质检规则",
+        "合同与发票办理指引"
+      ],
+      "retrieval_passed": null,
+      "citation_passed": null,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 7,
+      "question": "平台报错并且服务中断，演示无法继续。",
+      "expected_category": "系统故障",
+      "actual_category": "系统故障",
+      "classification_passed": true,
+      "expected_document": "商务服务响应与升级规范",
+      "retrieved_titles": [
+        "AI 助手回答边界与质检规则",
+        "企业账户与订单查询说明",
+        "商务服务响应与升级规范"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 8,
+      "question": "请查询客户订单的交付状态。",
+      "expected_category": "订单查询",
+      "actual_category": "订单查询",
+      "classification_passed": true,
+      "expected_document": "企业账户与订单查询说明",
+      "retrieved_titles": [
+        "企业账户与订单查询说明",
+        "合同与发票办理指引",
+        "AI 助手回答边界与质检规则"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 9,
+      "question": "合同初审大概需要几个工作日？",
+      "expected_category": "合同咨询",
+      "actual_category": "合同咨询",
+      "classification_passed": true,
+      "expected_document": "合同与发票办理指引",
+      "retrieved_titles": [
+        "合同与发票办理指引",
+        "商务服务响应与升级规范",
+        "AI 助手回答边界与质检规则"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 10,
+      "question": "如何更新企业管理员的登录邮箱？",
+      "expected_category": "账户访问",
+      "actual_category": "账户访问",
+      "classification_passed": true,
+      "expected_document": "企业账户与订单查询说明",
+      "retrieved_titles": [
+        "企业账户与订单查询说明",
+        "合同与发票办理指引",
+        "商务服务响应与升级规范"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 11,
+      "question": "发票申请提交后多久可以处理？",
+      "expected_category": "发票办理",
+      "actual_category": "发票办理",
+      "classification_passed": true,
+      "expected_document": "合同与发票办理指引",
+      "retrieved_titles": [
+        "合同与发票办理指引",
+        "企业账户与订单查询说明",
+        "商务服务响应与升级规范"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 12,
+      "question": "账单金额有疑问，需要核对支付记录。",
+      "expected_category": "付款咨询",
+      "actual_category": "付款咨询",
+      "classification_passed": true,
+      "expected_document": null,
+      "retrieved_titles": [
+        "企业账户与订单查询说明",
+        "合同与发票办理指引",
+        "商务服务响应与升级规范"
+      ],
+      "retrieval_passed": null,
+      "citation_passed": null,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    }
+  ]
+}
