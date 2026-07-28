@@ -11,7 +11,7 @@ const router = useRouter()
 const mode = ref<'login' | 'register'>('login')
 const selectedDemo = ref('enterprise')
 const email = ref('enterprise@neusoft.local')
-const password = ref('Demo123!')
+const password = ref('')
 const displayName = ref('')
 const pending = ref(false)
 const error = ref('')
@@ -28,7 +28,7 @@ const demoHint = computed(() => demos[selectedDemo.value as keyof typeof demos].
 
 function chooseDemo() {
   email.value = demos[selectedDemo.value as keyof typeof demos].email
-  password.value = 'Demo123!'
+  password.value = ''
   error.value = ''
 }
 

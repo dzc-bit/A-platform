@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -9,7 +11,7 @@ from .knowledge import index_document
 from .runtime_settings import SETTING_DEFAULTS, SETTING_DESCRIPTIONS, ensure_runtime_settings
 
 
-DEMO_PASSWORD = "Demo123!"
+DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "replace-me-in-env")
 
 
 def seed_demo_data(db: Session) -> None:

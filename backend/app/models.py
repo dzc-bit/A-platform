@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
@@ -24,6 +25,7 @@ class User(TimestampMixin, Base):
     display_name: Mapped[str] = mapped_column(String(80))
     role: Mapped[str] = mapped_column(String(32), default="enterprise_user", index=True)
     is_active: Mapped[bool] = mapped_column(default=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class UserPreference(TimestampMixin, Base):
@@ -91,6 +93,18 @@ class Message(TimestampMixin, Base):
     content: Mapped[str] = mapped_column(Text)
     trace_json: Mapped[str] = mapped_column(Text, default="[]")
     citations_json: Mapped[str] = mapped_column(Text, default="[]")
+    artifacts_json: Mapped[str] = mapped_column(Text, default="[]")
+
+    @property
+    def artifacts(self) -> list[dict[str, object]]:
+        """Decode persisted media metadata while keeping legacy rows readable."""
+        try:
+            parsed = json.loads(self.artifacts_json or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [item for item in parsed if isinstance(item, dict)]
 
     # ``role`` is intentionally kept compatible with the agent/runtime
     # contract (``user``, ``assistant``, ``agent`` and ``system``).  These
@@ -208,3 +222,21 @@ class SupportNotification(TimestampMixin, Base):
     @property
     def sender_name(self) -> str | None:
         return None
+
+
+class AdminAuditLog(Base):
+    """Persisted trail of administrator operations for compliance audit."""
+
+    __tablename__ = "admin_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    admin_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    admin_name: Mapped[str] = mapped_column(String(80), default="")
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    target_type: Mapped[str] = mapped_column(String(32), default="")
+    target_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_name: Mapped[str] = mapped_column(String(160), default="")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    success: Mapped[bool] = mapped_column(Boolean, default=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

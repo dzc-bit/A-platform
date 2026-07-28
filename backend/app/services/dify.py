@@ -578,8 +578,12 @@ def _sniff_media_type(payload: bytes, kind: Literal["audio", "image"]) -> str | 
             return "image/webp"
         return None
 
-    if payload.startswith(b"RIFF") and _valid_wav(payload):
-        return "audio/wav"
+    if payload.startswith(b"RIFF"):
+        # Do not let bytes inside a malformed WAV container be reclassified
+        # as another audio format before the proxy can repair its sizes.
+        if payload[8:12] != b"WAVE":
+            return None
+        return "audio/wav" if _valid_wav(payload) else None
     if _valid_adts(payload):
         return "audio/aac"
     if _valid_mp3(payload):
@@ -1009,3 +1013,73 @@ class DifyGateway:
     async def run_image(self, prompt: str, size: str, user: str) -> DifyMediaResult:
         """Short alias used by callers that refer to the workflow as image."""
         return await self.run_text_to_image(prompt, size, user)
+
+    async def run_router_workflow(
+        self,
+        query: str,
+        user: str,
+        *,
+        context: list[dict[str, str]] | None = None,
+        conversation_id: int | None = None,
+        request_id: str = "",
+    ) -> DifyWorkflowResult:
+        """Call the Dify router workflow that classifies and routes requests.
+
+        Uses DIFY_ROUTER_API_KEY (separate from media/customer-service keys).
+        Returns structured outputs including answer, citations, trace, artifacts.
+        """
+        key = (settings.dify_router_api_key or "").strip()
+        if not settings.dify_api_url or not key:
+            return DifyWorkflowResult(
+                answer=None,
+                mode="local_fallback",
+                degraded=True,
+                detail="未配置 DIFY_ROUTER_API_KEY，路由工作流不可用",
+                status_code=503,
+            )
+        timeout = settings.dify_router_timeout_seconds
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    self._endpoint(),
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={
+                        "inputs": {
+                            "query": query,
+                            "context": json.dumps(context or [], ensure_ascii=False),
+                            "conversation_id": str(conversation_id) if conversation_id is not None else "null",
+                            "user_id": user,
+                            "request_id": request_id,
+                        },
+                        "response_mode": "blocking",
+                        "user": user,
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Dify router response is not an object")
+                data = payload.get("data", payload)
+                if not isinstance(data, dict):
+                    raise ValueError("Dify router response data is not an object")
+                if str(data.get("status", "")).lower() in {"failed", "error"}:
+                    raise ValueError("Dify router workflow reported failure")
+                outputs = data.get("outputs", data.get("output"))
+                if not isinstance(outputs, dict):
+                    raise ValueError("Dify router response missing outputs")
+                return DifyWorkflowResult(
+                    answer=None,
+                    mode="remote",
+                    degraded=False,
+                    detail="Dify 路由工作流调用成功",
+                    outputs=outputs,
+                    status_code=200,
+                )
+        except (httpx.HTTPError, TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
+            return DifyWorkflowResult(
+                answer=None,
+                mode="local_fallback",
+                degraded=True,
+                detail=f"Dify 路由工作流调用失败：{type(error).__name__}",
+                status_code=502,
+            )

@@ -10,9 +10,11 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import KnowledgeView from '@/views/KnowledgeView.vue'
 import type { Citation, Conversation, ConversationEvent, ConversationMessage, SupportNotification, Ticket, TicketEvent } from '@/types'
 
+type TicketFilter = 'pending' | 'open' | 'in_progress' | 'resolved' | 'all'
+
 const tickets = ref<Ticket[]>([])
 const selectedId = ref<number>()
-const filter = ref('pending')
+const filter = ref<TicketFilter>('pending')
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -38,14 +40,18 @@ let conversationController: AbortController | undefined
 let notificationController: AbortController | undefined
 const pendingConversationHydrates = new Set<number>()
 
-const visibleTickets = computed(() => {
-  if (filter.value === 'all') return tickets.value
-  if (filter.value === 'pending') return tickets.value.filter((ticket) => ticket.status !== 'resolved')
-  return tickets.value.filter((ticket) => ticket.status === filter.value)
-})
-const selectedTicket = computed(() => tickets.value.find((ticket) => ticket.id === selectedId.value))
+const ticketFilterLabels: Record<TicketFilter, string> = {
+  pending: '待处理工单',
+  open: '新建工单',
+  in_progress: '处理中工单',
+  resolved: '已解决归档',
+  all: '全部工单（含归档）',
+}
+
+const visibleTickets = computed(() => tickets.value.filter((ticket) => ticketMatchesFilter(ticket)))
+const selectedTicket = computed(() => visibleTickets.value.find((ticket) => ticket.id === selectedId.value))
 const selectedConversation = computed(() => supportConversations.value.find((conversation) => conversation.id === selectedConversationId.value))
-const openCount = computed(() => tickets.value.filter((ticket) => ticket.status !== 'resolved').length)
+const ticketFilterLabel = computed(() => ticketFilterLabels[filter.value])
 
 const visibleConversations = computed(() => conversationScope.value === 'all'
   ? supportConversations.value
@@ -90,17 +96,36 @@ function conversationAssignedLabel(conversation: Conversation) {
 const selectedConversationPriority = computed(() => selectedConversation.value ? conversationPriority(selectedConversation.value) : null)
 const unreadNotifications = computed(() => notifications.value.length)
 
-watch(filter, (nextFilter) => {
-  const current = selectedTicket.value
-  const matches = (ticket: Ticket) => nextFilter === 'all' || (nextFilter === 'pending' ? ticket.status !== 'resolved' : ticket.status === nextFilter)
-  if (current && matches(current)) return
-  const first = tickets.value.find(matches)
-  if (first) choose(first)
-})
+watch(filter, () => reconcileTicketSelection())
 
-function choose(ticket: Ticket) {
+function ticketMatchesFilter(ticket: Ticket, selectedFilter: TicketFilter = filter.value) {
+  if (selectedFilter === 'all') return true
+  if (selectedFilter === 'pending') return ticket.status !== 'resolved'
+  return ticket.status === selectedFilter
+}
+
+function clearTicketSelection() {
+  selectedId.value = undefined
+  reply.value = ''
+  ticketBasis.value = []
+  basisError.value = ''
+  basisLoading.value = false
+}
+
+function reconcileTicketSelection(preferred?: Ticket) {
+  const current = preferred ?? tickets.value.find((ticket) => ticket.id === selectedId.value)
+  if (current && ticketMatchesFilter(current)) {
+    if (preferred) choose(current, detailMode.value === 'ticket')
+    return
+  }
+  const first = visibleTickets.value[0]
+  if (first) choose(first, detailMode.value === 'ticket')
+  else clearTicketSelection()
+}
+
+function choose(ticket: Ticket, showDetail = true) {
   selectedId.value = ticket.id
-  detailMode.value = 'ticket'
+  if (showDetail) detailMode.value = 'ticket'
   reply.value = ticket.final_reply || ticket.suggested_reply
   void loadTicketBasis(ticket)
 }
@@ -163,7 +188,9 @@ function upsertTicket(ticket: Ticket, prepend = false) {
 }
 
 function receiveTicketEvent(event: TicketEvent) {
+  const wasSelected = event.ticket.id === selectedId.value
   upsertTicket(event.ticket, event.action === 'created')
+  reconcileTicketSelection(wasSelected ? event.ticket : undefined)
 }
 
 function receiveConversationEvent(event: ConversationEvent) {
@@ -252,12 +279,7 @@ async function loadTickets() {
   error.value = ''
   try {
     tickets.value = await supportApi.tickets()
-    const current = tickets.value.find((ticket) => ticket.id === selectedId.value)
-    const matches = (ticket: Ticket) => filter.value === 'all' || (filter.value === 'pending' ? ticket.status !== 'resolved' : ticket.status === filter.value)
-    const firstVisible = tickets.value.find(matches)
-    if (current && matches(current)) choose(current)
-    else if (firstVisible) choose(firstVisible)
-    else if (filter.value === 'all' && tickets.value[0]) choose(tickets.value[0])
+    reconcileTicketSelection(tickets.value.find((ticket) => ticket.id === selectedId.value))
   } catch (caught) {
     error.value = errorMessage(caught)
   } finally {
@@ -315,10 +337,8 @@ async function updateTicket(status?: string) {
   error.value = ''
   try {
     const result = await supportApi.update(current.id, { status: status ?? current.status, final_reply: reply.value.trim() || undefined })
-    const index = tickets.value.findIndex((ticket) => ticket.id === result.id)
-    if (index >= 0) tickets.value.splice(index, 1, result)
-    else upsertTicket(result, true)
-    choose(result)
+    upsertTicket(result, true)
+    reconcileTicketSelection(result)
   } catch (caught) {
     error.value = errorMessage(caught)
   } finally {
@@ -392,7 +412,7 @@ onBeforeUnmount(() => {
       </details>
       <div class="ticket-actions">
         <button class="button button--primary button--wide" @click="showNew = true"><CirclePlus :size="17" />创建工单</button>
-        <label class="select-with-icon"><Filter :size="16" /><select v-model="filter" aria-label="工单状态筛选"><option value="pending">待处理</option><option value="open">新建</option><option value="in_progress">处理中</option><option value="all">全部工单</option><option value="resolved">已解决</option></select></label>
+        <label class="select-with-icon"><Filter :size="16" /><select v-model="filter" aria-label="工单状态筛选"><option value="pending">待处理</option><option value="open">新建</option><option value="in_progress">处理中</option><option value="resolved">已解决归档</option><option value="all">全部工单（含归档）</option></select></label>
       </div>
       <section class="live-conversation-list" aria-label="实时人工会话">
         <div class="live-conversation-heading"><span><MessageCircle :size="15" />{{ conversationScope === 'all' ? '对话记录' : '多用户会话' }}</span><strong>{{ visibleConversations.length }}</strong></div>
@@ -407,7 +427,7 @@ onBeforeUnmount(() => {
         </template>
         <p v-if="!conversationLoading && !conversationError && !visibleConversations.length" class="live-conversation-empty">{{ conversationScope === 'all' ? '暂无历史会话记录' : '暂无等待接入的人工会话' }}</p>
       </section>
-      <div class="queue-section-heading"><div><p class="eyebrow">工单队列</p><strong>{{ filter === 'all' ? tickets.length : openCount }} 个{{ filter === 'all' ? '全部工单' : '待处理工单' }}</strong></div><button class="icon-button" title="刷新工单" aria-label="刷新工单" @click="loadTickets"><RefreshCw :size="16" /></button></div>
+      <div class="queue-section-heading"><div><p class="eyebrow">工单队列</p><strong>{{ visibleTickets.length }} 个{{ ticketFilterLabel }}</strong></div><button class="icon-button" title="刷新工单" aria-label="刷新工单" @click="loadTickets"><RefreshCw :size="16" /></button></div>
       <LoadingState v-if="loading" label="正在载入工单" />
       <p v-else-if="error" class="inline-error"><AlertCircle :size="16" />{{ error }}</p>
       <div v-else class="ticket-list">

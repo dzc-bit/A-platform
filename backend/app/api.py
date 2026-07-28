@@ -4,13 +4,17 @@ import asyncio
 import csv
 import io
 import json
+import logging
 import re
+import secrets
+import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
+from uuid import uuid4
 from xml.etree import ElementTree
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
@@ -21,6 +25,7 @@ from .config import settings
 from .database import SessionLocal, get_db
 from .dependencies import get_current_user, require_roles
 from .models import (
+    AdminAuditLog,
     AISetting,
     Conversation,
     KnowledgeDocument,
@@ -30,10 +35,14 @@ from .models import (
     User,
 )
 from .schemas import (
+    AdminAuditLogOut,
+    AdminAuditLogPage,
     AgentTrace,
+    Artifact,
     AuthResponse,
     ChatRequest,
     ChatResponse,
+    Citation,
     ConversationAssignmentUpdate,
     ConversationAuditDetail,
     ConversationAuditSummary,
@@ -57,6 +66,8 @@ from .schemas import (
     KnowledgeOut,
     KnowledgeReindexOut,
     HandoffResponse,
+    LangGraphCallbackRequest,
+    LangGraphCallbackResponse,
     LoginRequest,
     MessageOut,
     RegisterRequest,
@@ -70,9 +81,11 @@ from .schemas import (
     TicketCreate,
     TicketOut,
     TicketUpdate,
+    UserCreate,
     UserOut,
     UserPreferenceOut,
     UserPreferenceUpdate,
+    UserResetPassword,
     UserRoleUpdate,
 )
 from .security import create_access_token, hash_password, verify_password
@@ -97,7 +110,8 @@ from .services.dify import DifyGateway, DifyMediaProxyError
 from .services.events import ticket_event_broker
 from .services.knowledge import index_document, remove_document, retrieve
 from .services.preferences import get_user_preference, preference_instruction
-from .services.runtime_settings import get_runtime_settings, validate_setting
+from .services.runtime_settings import get_runtime_settings, validate_setting, SETTING_DEFAULTS, SETTING_DESCRIPTIONS
+from .services.admin_audit import record_admin_action
 from .services.vision import VisionService
 
 router = APIRouter(prefix=settings.api_prefix)
@@ -656,6 +670,7 @@ def _persist_chat_result(db: Session, conversation: Conversation, result: AgentR
             content=result.answer,
             trace_json=json.dumps([trace.model_dump() for trace in result.trace], ensure_ascii=False),
             citations_json=json.dumps([citation.model_dump() for citation in result.citations], ensure_ascii=False),
+            artifacts_json=json.dumps([artifact.model_dump() for artifact in result.artifacts], ensure_ascii=False),
         )
     )
     conversation.updated_at = datetime.now(timezone.utc)
@@ -666,6 +681,7 @@ def _persist_chat_result(db: Session, conversation: Conversation, result: AgentR
         citations=result.citations,
         trace=result.trace,
         used_fallback=result.used_fallback,
+        artifacts=result.artifacts,
         handoff_available=_handoff_available(result),
         handoff_requested=conversation.handoff_status in {"requested", "active"},
     )
@@ -685,6 +701,156 @@ def _cache_hit_result(result: AgentResult) -> AgentResult:
         ],
         used_fallback=result.used_fallback,
         category=result.category,
+        artifacts=result.artifacts,
+    )
+
+
+def _normalize_dify_router_outputs(outputs: dict[str, object]) -> dict[str, object]:
+    """Map the active Dify end-node prefix to the canonical output contract."""
+    names = (
+        "answer",
+        "citations",
+        "trace",
+        "artifacts",
+        "need_clarification",
+        "category",
+        "used_fallback",
+    )
+    prefixes = ("a_", "b_", "c_")
+    active_prefix = next(
+        (
+            prefix
+            for prefix in prefixes
+            if isinstance(outputs.get(f"{prefix}answer"), str)
+            and str(outputs[f"{prefix}answer"]).strip()
+        ),
+        None,
+    )
+    if active_prefix is None:
+        active_prefix = next(
+            (prefix for prefix in prefixes if any(f"{prefix}{name}" in outputs for name in names)),
+            None,
+        )
+    if active_prefix is None:
+        return outputs
+
+    normalized = dict(outputs)
+    for name in names:
+        prefixed_name = f"{active_prefix}{name}"
+        if name not in normalized and prefixed_name in outputs:
+            normalized[name] = outputs[prefixed_name]
+    return normalized
+
+
+async def _run_chat_via_router_or_local(
+    db: Session,
+    user: User,
+    payload: ChatRequest,
+    conversation: Conversation,
+    preference,
+    runtime_settings,
+) -> AgentResult:
+    """Try Dify router workflow first; fall back to local LangGraph orchestrator."""
+    if settings.dify_router_api_key and settings.dify_api_url:
+        rows = db.execute(
+            select(Message.role, Message.content)
+            .where(
+                Message.conversation_id == conversation.id,
+                Message.role.in_(("user", "assistant")),
+            )
+            .order_by(Message.id.desc())
+            .limit(20)
+        ).all()
+        context = [
+            {"role": role, "content": content.strip()[:8000]}
+            for role, content in reversed(rows)
+            if content.strip()
+        ]
+        while context and len(json.dumps(context, ensure_ascii=False, separators=(",", ":"))) > 19_000:
+            context.pop(0)
+        router_result = await dify_gateway.run_router_workflow(
+            payload.message.strip(),
+            str(user.id),
+            context=context,
+            conversation_id=conversation.id,
+            request_id=str(uuid4()),
+        )
+        if not router_result.degraded and router_result.outputs:
+            outputs = _normalize_dify_router_outputs(router_result.outputs)
+            answer = outputs.get("answer") or outputs.get("text") or ""
+            if isinstance(answer, str) and answer.strip():
+                def output_objects(name: str) -> list[dict[str, object]]:
+                    value = outputs.get(name, [])
+                    if isinstance(value, str):
+                        try:
+                            value = json.loads(value)
+                        except json.JSONDecodeError:
+                            return []
+                    if not isinstance(value, list):
+                        return []
+                    return [item for item in value if isinstance(item, dict)]
+
+                citations = []
+                for index, item in enumerate(output_objects("citations")):
+                    try:
+                        metadata = item.get("metadata")
+                        metadata = metadata if isinstance(metadata, dict) else {}
+                        document_id = (
+                            item.get("document_id")
+                            or metadata.get("document_id")
+                            or metadata.get("dataset_id")
+                            or f"dify-{index}"
+                        )
+                        citations.append(Citation(
+                            document_id=document_id,
+                            title=str(
+                                item.get("title")
+                                or metadata.get("document_name")
+                                or metadata.get("name")
+                                or "Dify 知识库"
+                            ),
+                            excerpt=str(item.get("excerpt") or item.get("content") or item.get("text") or ""),
+                            score=float(item.get("score", metadata.get("score", 0))),
+                        ))
+                    except (TypeError, ValueError):
+                        continue
+                trace = [AgentTrace(
+                    step="Dify 路由工作流",
+                    status="completed",
+                    detail=router_result.detail,
+                )]
+                for item in output_objects("trace"):
+                    item_status = item.get("status", "completed")
+                    if item_status not in {"completed", "skipped", "fallback"}:
+                        item_status = "completed"
+                    trace.append(AgentTrace(
+                        step=str(item.get("step", "")),
+                        status=item_status,
+                        detail=str(item.get("detail", "")),
+                    ))
+                artifacts = []
+                for item in output_objects("artifacts"):
+                    try:
+                        artifacts.append(Artifact.model_validate(item))
+                    except (TypeError, ValueError):
+                        continue
+                return AgentResult(
+                    answer=answer.strip(),
+                    citations=citations,
+                    trace=trace,
+                    used_fallback=(
+                        str(outputs.get("used_fallback", "false")).strip().casefold()
+                        in {"1", "true", "yes"}
+                    ),
+                    category=str(outputs.get("category", "")),
+                    artifacts=artifacts,
+                )
+    # Fallback: local LangGraph orchestrator.
+    return await orchestrator.run(
+        db,
+        payload.message.strip(),
+        conversation_id=conversation.id,
+        preference_instruction=preference_instruction(preference),
     )
 
 
@@ -708,14 +874,16 @@ async def _run_chat(db: Session, user: User, payload: ChatRequest) -> ChatRespon
         else None
     )
     conversation = _begin_chat(db, user, payload)
+    if cached is None and settings.dify_router_api_key and settings.dify_api_url:
+        # The Dify workflow calls this FastAPI process back on another request.
+        # Do not keep a SQLite write transaction open across that network hop.
+        db.commit()
+        db.refresh(conversation)
     if cached is not None:
         result = _cache_hit_result(cached)
     else:
-        result = await orchestrator.run(
-            db,
-            payload.message.strip(),
-            conversation_id=conversation.id,
-            preference_instruction=preference_instruction(preference),
+        result = await _run_chat_via_router_or_local(
+            db, user, payload, conversation, preference, runtime_settings
         )
     response = _persist_chat_result(db, conversation, result)
     assistant_message = db.scalar(
@@ -780,6 +948,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
     user = db.scalar(select(User).where(User.email == payload.email.strip().lower()))
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="邮箱或密码错误")
+    if user.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="该账户已注销")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="该账户已停用")
     return _auth_response(user)
@@ -1056,6 +1226,17 @@ async def stream_chat(
         )
         try:
             yield f"event: trace\ndata: {json.dumps(dispatch_trace.model_dump(), ensure_ascii=False)}\n\n"
+            if settings.dify_router_api_key and settings.dify_api_url:
+                result = await _run_chat(db, current_user, payload)
+                committed = True
+                for trace in result.trace:
+                    yield f"event: trace\ndata: {json.dumps(trace.model_dump(), ensure_ascii=False)}\n\n"
+                yield (
+                    "event: reset\ndata: "
+                    f"{json.dumps({'text': result.answer}, ensure_ascii=False)}\n\n"
+                )
+                yield f"event: done\ndata: {result.model_dump_json()}\n\n"
+                return
             preference = get_user_preference(db, current_user.id)
             if payload.conversation_id is not None:
                 _owned_conversation(db, payload.conversation_id, current_user)
@@ -1661,6 +1842,8 @@ def list_handoff_conversations(
     statement = select(Conversation)
     if status_filter in {None, "pending"}:
         statement = statement.where(Conversation.handoff_status.in_(("requested", "active")))
+    elif status_filter == "all":
+        statement = statement.where(Conversation.handoff_status.in_(("requested", "active", "closed")))
     elif status_filter in {"requested", "active", "closed"}:
         statement = statement.where(Conversation.handoff_status == status_filter)
     if current_user.role == "support_agent":
@@ -2256,10 +2439,79 @@ async def update_ticket(
 
 @router.get("/admin/users", response_model=list[UserOut], tags=["admin"])
 def list_users(
-    current_user: User = Depends(require_roles("admin")), db: Session = Depends(get_db)
+    q: str | None = Query(default=None, max_length=100),
+    role: str | None = Query(default=None),
+    is_active: bool | None = Query(default=None),
+    include_deleted: bool = Query(default=False),
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
 ) -> list[User]:
     del current_user
-    return list(db.scalars(select(User).order_by(User.created_at.desc())).all())
+    stmt = select(User).order_by(User.created_at.desc())
+    if not include_deleted:
+        stmt = stmt.where(User.deleted_at.is_(None))
+    if q:
+        pattern = f"%{q.strip()}%"
+        stmt = stmt.where(User.display_name.ilike(pattern) | User.email.ilike(pattern))
+    if role:
+        stmt = stmt.where(User.role == role)
+    if is_active is not None:
+        stmt = stmt.where(User.is_active.is_(is_active))
+    return list(db.scalars(stmt).all())
+
+
+@router.post("/admin/users", response_model=UserOut, status_code=status.HTTP_201_CREATED, tags=["admin"])
+def create_user(
+    payload: UserCreate,
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+) -> User:
+    email_normalized = payload.email.strip().lower()
+    existing = db.scalar(select(User).where(User.email == email_normalized))
+    if existing is not None:
+        record_admin_action(
+            db, current_user, "create_user",
+            target_type="user", target_name=email_normalized,
+            detail=f"角色={payload.role}", success=False, error_message="邮箱已存在",
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该邮箱已被注册")
+    user = User(
+        email=email_normalized,
+        password_hash=hash_password(payload.password),
+        display_name=payload.display_name.strip(),
+        role=payload.role,
+        is_active=payload.is_active,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    record_admin_action(
+        db, current_user, "create_user",
+        target_type="user", target_id=user.id, target_name=user.display_name,
+        detail=f"邮箱={user.email}, 角色={user.role}",
+    )
+    return user
+
+
+@router.post("/admin/users/{user_id}/reset-password", response_model=UserOut, tags=["admin"])
+def reset_user_password(
+    user_id: int,
+    payload: UserResetPassword,
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+) -> User:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    user.password_hash = hash_password(payload.new_password)
+    db.commit()
+    db.refresh(user)
+    record_admin_action(
+        db, current_user, "reset_password",
+        target_type="user", target_id=user.id, target_name=user.display_name,
+        detail="管理员重置密码",
+    )
+    return user
 
 
 @router.patch("/admin/users/{user_id}", response_model=UserOut, tags=["admin"])
@@ -2269,26 +2521,82 @@ def update_user(
     current_user: User = Depends(require_roles("admin")),
     db: Session = Depends(get_db),
 ) -> User:
-    del current_user
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    # Self-protection: admin cannot deactivate or demote themselves.
+    if user.id == current_user.id and (not payload.is_active or payload.role != "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="不能停用或降级当前登录的管理员账户",
+        )
     removes_active_admin = user.role == "admin" and user.is_active and (
         payload.role != "admin" or not payload.is_active
     )
     if removes_active_admin:
         active_admin_count = db.scalar(
-            select(func.count(User.id)).where(User.role == "admin", User.is_active.is_(True))
+            select(func.count(User.id)).where(
+                User.role == "admin", User.is_active.is_(True), User.deleted_at.is_(None)
+            )
         ) or 0
         if active_admin_count <= 1:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="系统必须保留至少一个已启用的管理员账户",
             )
+    changes: list[str] = []
+    if user.role != payload.role:
+        changes.append(f"角色: {user.role} → {payload.role}")
+    if user.is_active != payload.is_active:
+        changes.append(f"状态: {'启用' if user.is_active else '停用'} → {'启用' if payload.is_active else '停用'}")
     user.role = payload.role
     user.is_active = payload.is_active
     db.commit()
     db.refresh(user)
+    if changes:
+        record_admin_action(
+            db, current_user, "update_user",
+            target_type="user", target_id=user.id, target_name=user.display_name,
+            detail="; ".join(changes),
+        )
+    return user
+
+
+@router.delete("/admin/users/{user_id}", response_model=UserOut, tags=["admin"])
+def delete_user(
+    user_id: int,
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+) -> User:
+    """Soft-delete a user. Data (conversations, tickets, messages) is preserved."""
+    user = db.get(User, user_id)
+    if user is None or user.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    if user.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="不能删除当前登录的管理员账户",
+        )
+    if user.role == "admin" and user.is_active:
+        active_admin_count = db.scalar(
+            select(func.count(User.id)).where(
+                User.role == "admin", User.is_active.is_(True), User.deleted_at.is_(None)
+            )
+        ) or 0
+        if active_admin_count <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="系统必须保留至少一个已启用的管理员账户",
+            )
+    user.deleted_at = datetime.now(timezone.utc)
+    user.is_active = False
+    db.commit()
+    db.refresh(user)
+    record_admin_action(
+        db, current_user, "delete_user",
+        target_type="user", target_id=user.id, target_name=user.display_name,
+        detail=f"软删除用户，邮箱={user.email}",
+    )
     return user
 
 
@@ -2307,12 +2615,17 @@ def update_setting(
     current_user: User = Depends(require_roles("admin")),
     db: Session = Depends(get_db),
 ) -> AISetting:
-    del current_user
     try:
         value = validate_setting(key, payload.value)
     except ValueError as error:
+        record_admin_action(
+            db, current_user, "update_setting",
+            target_type="setting", target_name=key,
+            detail=f"值={payload.value[:100]}", success=False, error_message=str(error),
+        )
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
     setting = db.scalar(select(AISetting).where(AISetting.key == key))
+    old_value = setting.value if setting else "(新建)"
     if setting is None:
         setting = AISetting(key=key, value=value, description=payload.description.strip())
         db.add(setting)
@@ -2322,7 +2635,64 @@ def update_setting(
     db.commit()
     db.refresh(setting)
     retrieval_cache.clear()
+    record_admin_action(
+        db, current_user, "update_setting",
+        target_type="setting", target_name=key,
+        detail=f"{old_value[:60]} → {value[:60]}",
+    )
     return setting
+
+
+@router.put("/admin/settings-reset", response_model=list[SettingOut], tags=["admin"])
+def reset_settings(
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+) -> list[AISetting]:
+    """Restore all AI settings to their factory defaults."""
+    results: list[AISetting] = []
+    for key, default_value in SETTING_DEFAULTS.items():
+        setting = db.scalar(select(AISetting).where(AISetting.key == key))
+        if setting is None:
+            setting = AISetting(key=key, value=default_value, description=SETTING_DESCRIPTIONS.get(key, ""))
+            db.add(setting)
+        else:
+            setting.value = default_value
+            setting.description = SETTING_DESCRIPTIONS.get(key, "")
+        results.append(setting)
+    db.commit()
+    for setting in results:
+        db.refresh(setting)
+    retrieval_cache.clear()
+    record_admin_action(
+        db, current_user, "reset_settings",
+        target_type="setting", target_name="全部配置",
+        detail=f"恢复 {len(SETTING_DEFAULTS)} 项配置为默认值",
+    )
+    return results
+
+
+@router.get("/admin/audit-logs", response_model=AdminAuditLogPage, tags=["admin"])
+def list_audit_logs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    action: str | None = Query(default=None),
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+) -> AdminAuditLogPage:
+    del current_user
+    stmt = select(AdminAuditLog).order_by(AdminAuditLog.created_at.desc())
+    count_stmt = select(func.count(AdminAuditLog.id))
+    if action:
+        stmt = stmt.where(AdminAuditLog.action == action)
+        count_stmt = count_stmt.where(AdminAuditLog.action == action)
+    total = db.scalar(count_stmt) or 0
+    items = list(db.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).all())
+    return AdminAuditLogPage(
+        items=[AdminAuditLogOut.model_validate(item) for item in items],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get(
@@ -2796,6 +3166,78 @@ def voice_capabilities(current_user: User = Depends(get_current_user)) -> dict[s
         "output": "浏览器 speechSynthesis（客户端本地朗读）",
         "fallback": "浏览器不支持时保留完整文本输入和回复流程",
     }
+
+
+# ---------------------------------------------------------------------------
+# Internal LangGraph callback (called by Dify router workflow HTTP node)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/tools/langgraph/run",
+    response_model=LangGraphCallbackResponse,
+    tags=["internal"],
+    include_in_schema=False,
+)
+async def langgraph_callback(
+    payload: LangGraphCallbackRequest,
+    db: Session = Depends(get_db),
+    x_dify_callback_secret: str | None = Header(default=None),
+) -> LangGraphCallbackResponse:
+    """Internal endpoint for Dify router workflow HTTP callback node.
+
+    Security: verified via shared secret header, not user JWT.
+    Recursion guard: route_depth > 1 is rejected.
+    """
+    started = time.monotonic()
+
+    # 1. Verify shared secret.
+    expected_secret = settings.dify_callback_secret
+    if not expected_secret:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="回调服务未配置")
+    if not x_dify_callback_secret or not secrets.compare_digest(x_dify_callback_secret, expected_secret):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
+
+    # 2. Recursion guard.
+    if payload.route_depth > 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="route_depth 超限，拒绝递归调用")
+
+    if payload.conversation_id is not None:
+        conversation = db.get(Conversation, payload.conversation_id)
+        if conversation is None or str(conversation.user_id) != payload.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="会话上下文不可用")
+
+    # 3. Execute via orchestrator (does NOT call Dify router workflow).
+    context_dicts = [{"role": m.role, "content": m.content} for m in payload.context] if payload.context else None
+    result = await orchestrator.run_callback(
+        db,
+        payload.query,
+        context=context_dicts,
+        conversation_id=payload.conversation_id,
+        user_id=payload.user_id,
+        route=payload.route,
+        media_intent=payload.media_intent,
+    )
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    # Structured log: request_id, route, elapsed, status only.
+    logging.getLogger("business_ai.callback").info(
+        "callback request_id=%s route=%s elapsed_ms=%d status=%s",
+        payload.request_id,
+        payload.route,
+        elapsed_ms,
+        "fallback" if result.used_fallback else "ok",
+    )
+
+    return LangGraphCallbackResponse(
+        answer=result.answer,
+        category=result.category,
+        citations=result.citations,
+        trace=result.trace,
+        artifacts=result.artifacts,
+        need_clarification=False,
+        used_fallback=result.used_fallback,
+    )
 
 
 @router.post("/dify/customer-service", response_model=DifyWorkflowResponse, tags=["dify"])

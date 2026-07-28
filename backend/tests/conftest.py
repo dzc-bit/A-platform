@@ -10,6 +10,7 @@ TEST_DATABASE = Path(__file__).parent / "test_business_ai.db"
 os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DATABASE.as_posix()}"
 os.environ["TOKEN_SECRET"] = "test-only-secret"
+os.environ["DEMO_PASSWORD"] = "test-demo-password"
 # Tests must remain deterministic and must never send demo fixtures to a configured
 # local cloud provider loaded from the repository-root .env file.
 os.environ["LLM_API_KEY"] = ""
@@ -45,6 +46,6 @@ def client() -> TestClient:
 
 
 def login(client: TestClient, email: str = "enterprise@neusoft.local") -> dict[str, str]:
-    response = client.post("/api/v1/auth/login", json={"email": email, "password": "Demo123!"})
+    response = client.post("/api/v1/auth/login", json={"email": email, "password": os.environ["DEMO_PASSWORD"]})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}

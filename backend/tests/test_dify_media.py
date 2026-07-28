@@ -301,7 +301,10 @@ def test_media_proxy_fetches_and_repairs_real_remote_wav(monkeypatch: pytest.Mon
         stream.setnchannels(1)
         stream.setsampwidth(2)
         stream.setframerate(24_000)
-        stream.writeframes(b"\x00\x00" * 8)
+        # PCM can coincidentally contain an MP3-looking frame header.  A file
+        # with an explicit RIFF/WAVE signature must still stay on the WAV
+        # validation and repair path.
+        stream.writeframes(b"\xff\xfb\x90\x64" + b"\x01\x00" * 510)
     malformed = bytearray(source.getvalue())
     struct.pack_into("<I", malformed, 4, 0x7FFFFFFF)
     struct.pack_into("<I", malformed, 40, 0x7FFFFFFF)
@@ -338,7 +341,7 @@ def test_media_proxy_fetches_and_repairs_real_remote_wav(monkeypatch: pytest.Mon
 
     assert media.content_type == "audio/wav"
     with wave.open(io.BytesIO(media.payload), "rb") as stream:
-        assert stream.getnframes() == 8
+        assert stream.getnframes() == 512
 
 
 def test_media_proxy_endpoint_returns_verified_bytes(client, monkeypatch: pytest.MonkeyPatch) -> None:

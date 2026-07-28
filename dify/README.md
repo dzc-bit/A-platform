@@ -1,7 +1,8 @@
 # Dify 工作流接入说明
 
-本目录提供三个 Dify DSL 模板：
+本目录提供四个 Dify DSL 模板：
 
+- `router-workflow.yml`：A/B/C 意图分类 -> 简单知识检索 / 复杂任务回调 / TTS 或文生图回调。
 - `business-support-workflow.yml`：风险分类 -> 高风险只读健康检查 -> 知识检索 -> 代码证据检查 -> 条件路由 -> 合规生成或人工转交。
 - `text-to-speech-workflow.yml`：文本/音色参数校验 -> 外部 TTS HTTP API -> 返回真实服务响应。
 - `text-to-image-workflow.yml`：提示词/画幅校验 -> 外部文生图 HTTP API -> 返回真实服务响应。
@@ -11,7 +12,7 @@
 ## 当前本机配置状态（2026-07-18）
 
 - 官方 Dify `1.15.0` Compose 与服务清单已通过配置检查；Docker Engine 29.6.1 当前可用，Dify Web 和 `/console/api/setup` 均 HTTP 200，API/PostgreSQL/Redis/Sandbox healthy。现有运行容器由 `D:\dify-runtime\docker` 启动，其 Compose 与仓库 `.runtime/dify/docker` 副本哈希相同；没有为路径一致性再启动第二套冲突实例。
-- 本目录当前三份扩展 DSL 已在目标 Dify 环境完成相应配置；客服、TTS、文生图三个应用均已发布/可调用，FastAPI 三条链路均 `HTTP 200 / remote / degraded=false`，TTS/文生图真实媒体验收通过。模板 `0.3.0` 相对官方 `0.6.0` 的兼容性警告保留为 fresh workspace 边界。
+- 本目录当前四份扩展 DSL 已在目标 Dify 环境完成相应配置；Router、客服、TTS、文生图应用均已发布/可调用，TTS/文生图真实媒体验收通过。模板 `0.3.0` 相对官方 `0.6.0` 的兼容性警告保留为 fresh workspace 边界。
 - 本轮没有回显或写入任何私有 `.env` 值；Compose 加载私有配置后，客服、TTS、文生图 FastAPI 调用均为 `HTTP 200 / remote / degraded=false`，实际 WAV/PNG 已下载并通过播放/显示。
 - 当前模板标记为 DSL `0.3.0`，而本机 Dify 1.15 导出的当前 DSL 版本为 `0.6.0`；导入可能带兼容警告。`dependencies` 也未包含 Tongyi marketplace 插件的精确版本与哈希，fresh workspace 必须先安装并配置 `langgenius/tongyi/tongyi`，或从已配置的目标实例重新导出模板后再纳入版本控制。
 - 不要猜测插件版本或依赖哈希。只有目标实例重新导出的依赖记录、成功导入日志和发布后 API/媒体结果可以作为可复现证据。
@@ -44,9 +45,12 @@ FastAPI 的调用映射如下：
 
 | Dify 应用 | FastAPI 路径 | 输入 | 凭据变量 |
 | --- | --- | --- | --- |
+| 智能 Router | `POST /api/v1/assistant/chat` 或 `/api/v1/assistant/chat/stream`（由 FastAPI 内部调用 Dify） | `message`, `conversation_id` | `DIFY_ROUTER_API_KEY` |
 | 客服工作流 | `POST /api/v1/dify/customer-service` | `query` | `DIFY_API_KEY` |
 | TTS 工作流 | `POST /api/v1/dify/text-to-speech`（`/dify/tts`） | `text`, `voice` | `DIFY_TTS_API_KEY`，空时回退 `DIFY_API_KEY` |
 | 文生图工作流 | `POST /api/v1/dify/text-to-image`（`/dify/image`） | `prompt`, `size` | `DIFY_IMAGE_API_KEY`，空时回退 `DIFY_API_KEY` |
+
+Router 的 B/C 分支会从 Dify 内部调用 `POST /api/v1/tools/langgraph/run`。该接口只接受带 `X-Dify-Callback-Secret` 的内部请求，不能作为前端入口。
 
 客服工作流在远程不可用时可返回带引用的本地 RAG 回退；当前目标实例的客服、TTS、文生图均已远程通过。TTS 和文生图没有安全的本地媒体回退，只有 Dify 输出经过外部 URL/data URL、媒体类型、大小和公网主机校验后才返回 `200`。未配置返回 `503`，上游失败或无真实媒体返回 `502`。`DIFY_MEDIA_ALLOWED_HOSTS` 可选限制受控媒体 URL 的主机名。模板结构测试和 FastAPI mock 测试仍不替代 fresh workspace 的导入/发布验收。
 
@@ -55,17 +59,17 @@ FastAPI 的调用映射如下：
 这些操作涉及账户授权、外部服务凭据和真实业务资料，不能由项目代码替代，也不应伪造：
 
 1. 管理员账户、通义模型凭据和工作流 API Key 只能由本人保管，不得写入文档、截图或提交历史。
-2. API Key 轮换后，只在私有 `.env` 更新 `DIFY_API_KEY`，再执行 `docker compose up -d --force-recreate backend`。
+2. API Key 轮换后，只在私有 `.env` 更新对应的 `DIFY_ROUTER_API_KEY`、`DIFY_API_KEY`、`DIFY_TTS_API_KEY` 或 `DIFY_IMAGE_API_KEY`，再执行 `docker compose up -d --force-recreate backend`。
 3. 补充业务资料时，只能上传经批准且已脱敏的内容；验收问题和标准答案不得启用为业务检索文档。
 4. 每次更换嵌入模型或替换知识文档后，应在 Dify“召回测试”中复验来源编号和官方链接，再发布工作流更新。
 
 ## 运行原则
 
 - Dify 是可选的增强服务，不作为本地 Compose 的必需依赖。
-- 后端是 AI 能力的统一入口；前端只调用 `/api/v1/dify/customer-service`，不直连 Dify。
+- 后端是 AI 能力的统一入口；主对话前端只调用 `/api/v1/assistant/chat/stream`，流在收到有效内容前失败时才回退 `/api/v1/assistant/chat`，不直连 Dify。`/api/v1/dify/customer-service` 是独立客服工作流接口，不是当前主对话入口。
 - Dify Gateway 本身不访问业务数据库；它只返回远程回答或降级原因。
-- Dify 不可用、调用凭据缺失、返回空回答或模型调用失败时，FastAPI API 层使用请求数据库会话运行 `BusinessAgentOrchestrator`，返回真实本地 RAG 回答、`citations` 和包含 Gateway 原因的 `trace`，不使用固定泛化文案。
-- 远程 Dify 成功时当前工作流只承诺答案文本，因此统一 API 的 `citations` 和 `trace` 可以为空数组。
+- Router 不可用、调用凭据缺失、超时、响应结构错误或返回空回答时，FastAPI API 层使用请求数据库会话运行 `BusinessAgentOrchestrator`，返回真实本地 RAG 回答、`citations` 和 Agent `trace`，不使用固定泛化文案。当前本地降级轨迹不承诺包含 Router 的失败原因。
+- Router 会将 A/B/C 分支前缀输出归一化为统一的 `answer`、`citations`、`trace`、`artifacts`、`category` 和 `used_fallback`；独立客服工作流仍可能只返回答案文本。
 - 不要把调用凭据、数据集 ID、客户文件、生产提示词或未脱敏业务资料提交到 Git。
 
 ## 建议节点参数
@@ -77,3 +81,65 @@ FastAPI 的调用映射如下：
 | LLM | 温度=0.2，要求给出下一步 | 保持客服答复稳定、可执行 |
 | 答复 | 返回答案和来源名称 | 前端可展示依据 |
 | 条件分支（扩展） | 无来源/故障 -> 转人工 | 高风险和未知问题不自动承诺 |
+
+## Router 工作流（智能路由）
+
+本目录新增 `router-workflow.yml` DSL 模板，实现基于意图分类的智能路由：A 类在 Dify 内完成知识检索，B 类通过 HTTP 回调交由后端 LangGraph 处理，C 类通过同一受保护回调进入异步媒体工具路径（不运行同步 StateGraph）。
+
+### 导入步骤
+
+1. 在 Dify 控制台中选择「导入 DSL」，上传 `router-workflow.yml`。
+2. 导入后打开工作流，检查 LLM 分类节点所选模型是否已在模型提供方中配置。
+3. 在 Dify 工作流环境变量中配置 `FASTAPI_CALLBACK_URL`（String 类型）和 `DIFY_CALLBACK_SECRET`（Secret 类型）。发布应用的 API Key 不填写在工作流变量中。
+4. 配置 HTTP 请求节点的回调地址（见下节），确认请求头中包含 `X-Dify-Callback-Secret`。
+5. 调试并发布工作流，为已发布应用生成 API Key，写入私有 `.env` 的 `DIFY_ROUTER_API_KEY`。
+
+### 回调 URL 配置
+
+工作流中 B、C 分支的 HTTP 请求节点需要回调 FastAPI 后端：
+
+| 运行环境 | 回调地址 |
+| --- | --- |
+| Docker Desktop（Windows/macOS） | `http://host.docker.internal:8000/api/v1/tools/langgraph/run` |
+| Linux（共享 Docker 网络） | `http://<backend容器名或网络别名>:8000/api/v1/tools/langgraph/run` |
+
+> 当前项目后端容器通过 `extra_hosts: host.docker.internal:host-gateway` 暴露宿主机地址，Docker Desktop 下 Dify 容器同样可使用 `host.docker.internal` 访问宿主机 8000 端口。
+
+### 必需环境变量
+
+| 变量 | 位置 | 说明 |
+| --- | --- | --- |
+| `FASTAPI_CALLBACK_URL` | Dify Router 工作流环境变量 | Dify 容器可访问的 FastAPI 根地址；Docker Desktop 使用 `http://host.docker.internal:8000` |
+| `DIFY_ROUTER_API_KEY` | 项目 `.env` → compose 注入后端 | FastAPI 调用 Dify Router 工作流的 API Key |
+| `DIFY_CALLBACK_SECRET` | 项目 `.env` → 后端，同时填入 Dify Router 工作流 Secret 变量 | 后端校验回调请求合法性的共享密钥，两侧必须完全一致 |
+| `DIFY_ROUTER_TIMEOUT_SECONDS` | 项目 `.env` → compose 注入后端（默认 150） | 等待 Dify 回调及嵌套媒体工作流的超时秒数 |
+
+### 完整调用流程
+
+```
+Vue 前端
+  → POST /api/v1/assistant/chat/stream（必要时回退 /api/v1/assistant/chat）
+    → FastAPI 检查最终回答缓存
+      → 未命中时调用 Dify Router（DIFY_ROUTER_API_KEY 鉴权，blocking）
+        → Dify LLM 执行外层 A/B/C 意图分类
+          ├─ A 类：Dify 知识检索 → Dify 回答 LLM → End
+          ├─ B 类：HTTP 回调 FastAPI，route=complex, route_depth=1
+          │    → Secret / 递归深度 / 会话归属校验
+          │    → LangGraph StateGraph 编排复杂任务
+          │    → LangChain/FAISS 提供本地 RAG 与 LCEL 组件
+          │    → 解析回调 JSON → End
+          └─ C 类：HTTP 回调 FastAPI，route=media, media_intent=tts|image
+               → 直接执行异步媒体工具，不运行同步 StateGraph
+               → 调用独立 Dify TTS/文生图工作流 → 返回真实 artifacts
+               → 解析回调 JSON → End
+      → FastAPI 归一化 a_/b_/c_ 输出、持久化回答与 artifacts
+    → Vue 展示统一 ChatResponse
+```
+
+B/C 分支在解析 FastAPI 响应后直接进入 End 节点，不会再调用第二个 Dify LLM 做润色。Dify 的 A/B/C 是跨系统外层路由；LangGraph 内部的“工单统计”“系统故障”“合同咨询”等是业务分类，两者不要混用。LangChain 负责 LCEL、文档处理和本地 RAG，LangGraph 只负责状态、并行、条件分支和有界循环。更完整的职责表与 B 类时序图见根目录 `README.md`。
+
+### 安全注意事项
+
+- `DIFY_CALLBACK_SECRET` 必须与 Dify 工作流 HTTP 请求节点中 `X-Dify-Callback-Secret` 请求头的值完全一致；不一致时后端将拒绝回调并返回 `401`。
+- 该密钥只能保存在私有 `.env` 和 Dify 控制台的工作流变量中，不得写入 README、知识库、截图或 Git 提交。
+- 回调端点仅接受来自 Dify 工作流的内部调用，不应暴露到公网。

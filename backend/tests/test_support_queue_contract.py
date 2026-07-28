@@ -5,6 +5,35 @@ from fastapi.testclient import TestClient
 from .conftest import login
 
 
+def test_support_history_excludes_ai_only_conversations(client: TestClient) -> None:
+    enterprise = login(client)
+    ai_only = client.post(
+        "/api/v1/assistant/chat",
+        headers=enterprise,
+        json={"message": "Keep this conversation with the AI assistant."},
+    )
+    assert ai_only.status_code == 200, ai_only.text
+
+    handed_off = client.post(
+        "/api/v1/assistant/chat",
+        headers=enterprise,
+        json={"message": "Create a conversation that will be handed to support."},
+    )
+    assert handed_off.status_code == 200, handed_off.text
+    handed_off_id = handed_off.json()["conversation_id"]
+    assert client.post(
+        f"/api/v1/assistant/conversations/{handed_off_id}/handoff",
+        headers=enterprise,
+    ).status_code == 200
+
+    support = login(client, "support@neusoft.local")
+    history = client.get("/api/v1/support/conversations?status=all", headers=support)
+    assert history.status_code == 200, history.text
+    conversation_ids = {item["id"] for item in history.json()}
+    assert handed_off_id in conversation_ids
+    assert ai_only.json()["conversation_id"] not in conversation_ids
+
+
 def test_support_queue_exposes_customer_metadata_and_human_actions(client: TestClient) -> None:
     enterprise = login(client)
     created = client.post(

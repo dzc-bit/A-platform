@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios'
 import type {
+  AdminAuditLogPage,
   AuthResponse,
   AgentTrace,
   ChatMessage,
@@ -25,7 +26,9 @@ import type {
   Ticket,
   TicketEvent,
   User,
+  UserCreatePayload,
   UserPreference,
+  UserResetPasswordPayload,
 } from '@/types'
 
 export const TOKEN_KEY = 'neusoft-ai-token'
@@ -491,12 +494,22 @@ export const difyApi = {
 }
 
 export const adminApi = {
-  users: () => api.get<User[]>('/admin/users').then((response) => response.data),
+  users: (params?: { q?: string; role?: string; is_active?: boolean }) =>
+    api.get<User[]>('/admin/users', { params }).then((response) => response.data),
+  createUser: (payload: UserCreatePayload) =>
+    api.post<User>('/admin/users', payload).then((response) => response.data),
   updateUser: (userId: number, payload: { role: User['role']; is_active: boolean }) =>
     api.patch<User>(`/admin/users/${userId}`, payload).then((response) => response.data),
+  resetPassword: (userId: number, payload: UserResetPasswordPayload) =>
+    api.post<User>(`/admin/users/${userId}/reset-password`, payload).then((response) => response.data),
+  deleteUser: (userId: number) =>
+    api.delete<User>(`/admin/users/${userId}`).then((response) => response.data),
   settings: () => api.get<Setting[]>('/admin/settings').then((response) => response.data),
   updateSetting: (key: string, payload: { value: string; description: string }) =>
     api.put<Setting>(`/admin/settings/${key}`, payload).then((response) => response.data),
+  resetSettings: () => api.put<Setting[]>('/admin/settings-reset').then((response) => response.data),
+  auditLogs: (params?: { page?: number; page_size?: number; action?: string }) =>
+    api.get<AdminAuditLogPage>('/admin/audit-logs', { params }).then((response) => response.data),
   messages: () => api.get<ChatMessage[]>('/admin/messages').then((response) => response.data),
   conversations: () => api.get<AdminConversationSummary[]>('/admin/conversations').then((response) => response.data),
   conversation: (conversationId: number) =>

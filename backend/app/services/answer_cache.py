@@ -115,4 +115,8 @@ def deserialize_agent_result(raw: str | None) -> AgentResult | None:
 
 
 def should_cache_result(result: AgentResult) -> bool:
-    return not settings.llm_api_key or not result.used_fallback
+    # Dify media references may be signed and short-lived. Never replay them
+    # from the answer cache after their validity window has elapsed.
+    if result.category in {"语音生成", "图片生成"}:
+        return False
+    return not result.artifacts and (not settings.llm_api_key or not result.used_fallback)

@@ -38,3 +38,10 @@ test-results/
 .downloads/
 .runtime/
 .workbuddy/
+
+# Local reports and archives
+*.docx
+*.pptx
+*.pdf
+*.zip
+*.rar

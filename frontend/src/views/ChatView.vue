@@ -33,6 +33,7 @@ const preferenceSaving = ref(false)
 const handoffAvailable = ref(false)
 const handoffConversationId = ref<number>()
 const handoffStatus = ref('ai')
+const handoffPanelOpen = ref(false)
 const handoffLoading = ref(false)
 const handoffError = ref('')
 const feedbackOpen = ref(false)
@@ -128,6 +129,7 @@ async function selectConversation(id: number) {
   feedbackNotice.value = ''
   const requestId = ++messageListRequest
   activeConversationId.value = id
+  handoffPanelOpen.value = false
   const selectedConversation = conversations.value.find((conversation) => conversation.id === id)
   if (selectedConversation?.handoff_status && !['ai', 'closed'].includes(selectedConversation.handoff_status)) {
     handoffConversationId.value = id
@@ -145,6 +147,9 @@ async function selectConversation(id: number) {
     const nextMessages = await assistantApi.messages(id)
     if (requestId !== messageListRequest || activeConversationId.value !== id) return
     messages.value = nextMessages.length ? nextMessages : [welcomeMessage()]
+    handoffAvailable.value = !handoffConversationId.value && nextMessages.some((item) => (
+      (item.role === 'assistant' || item.role === 'ai') && Boolean(item.content.trim())
+    ))
     await scrollToLatest()
   } catch (caught) {
     if (requestId !== messageListRequest || activeConversationId.value !== id) return
@@ -162,6 +167,7 @@ function newConversation() {
   messageLoading.value = false
   activeConversationId.value = undefined
   handoffConversationId.value = undefined
+  handoffPanelOpen.value = false
   handoffAvailable.value = false
   handoffStatus.value = 'ai'
   messages.value = [welcomeMessage()]
@@ -386,6 +392,7 @@ async function send() {
         citations: result.citations,
         trace: result.trace,
         used_fallback: result.used_fallback,
+        artifacts: result.artifacts,
         created_at: new Date().toISOString(),
       })
       if (preferences.value.auto_play_voice) speak(result.answer, preferences.value.preferred_language)
@@ -416,7 +423,10 @@ async function send() {
 }
 
 async function requestHumanSupport() {
-  if (handoffConversationId.value) return
+  if (handoffConversationId.value) {
+    handoffPanelOpen.value = true
+    return
+  }
   const conversationId = activeConversationId.value
   if (!conversationId || handoffLoading.value) {
     handoffError.value = conversationId ? '' : '请先发送一条消息，再转入人工会话。'
@@ -428,7 +438,11 @@ async function requestHumanSupport() {
     const result = await realtimeApi.handoff(conversationId)
     handoffConversationId.value = result.conversation_id || conversationId
     handoffStatus.value = result.status
+    handoffPanelOpen.value = true
     handoffAvailable.value = false
+    conversations.value = conversations.value.map((conversation) => conversation.id === conversationId
+      ? { ...conversation, handoff_status: result.status }
+      : conversation)
   } catch (caught) {
     handoffError.value = errorMessage(caught)
   } finally {
@@ -437,9 +451,7 @@ async function requestHumanSupport() {
 }
 
 function closeHumanSupport() {
-  handoffConversationId.value = undefined
-  handoffError.value = ''
-  handoffStatus.value = 'ai'
+  handoffPanelOpen.value = false
 }
 
 function toggleVoice() {
@@ -504,7 +516,7 @@ onBeforeUnmount(() => {
             <label><input v-model="preferences.auto_play_voice" :disabled="preferenceSaving" type="checkbox" @change="savePreferences" />自动朗读</label>
           </div>
           <div v-if="handoffAvailable || handoffConversationId" class="handoff-control">
-            <button class="button button--quiet" type="button" :disabled="handoffLoading || Boolean(handoffConversationId)" @click="requestHumanSupport">
+            <button class="button button--quiet" type="button" :disabled="handoffLoading" @click="requestHumanSupport">
               <Headset :size="16" />{{ handoffConversationId ? '查看人工会话' : (handoffLoading ? '正在转接' : '转人工') }}
             </button>
             <span v-if="handoffConversationId" class="handoff-status">{{ handoffStatus === 'active' ? '客服已接入' : '等待客服接入' }}</span>
@@ -545,7 +557,7 @@ onBeforeUnmount(() => {
       </form>
     </section>
 
-    <div v-if="handoffConversationId" class="human-chat-overlay" role="dialog" aria-label="实时人工会话">
+    <div v-if="handoffPanelOpen && handoffConversationId" class="human-chat-overlay" role="dialog" aria-label="实时人工会话">
       <div class="human-chat-overlay__backdrop" @click="closeHumanSupport" />
       <div class="human-chat-overlay__content">
         <button class="icon-button human-chat-overlay__close" type="button" title="关闭人工会话" aria-label="关闭人工会话" @click="closeHumanSupport"><X :size="18" /></button>

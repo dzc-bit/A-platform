@@ -7,6 +7,7 @@ export interface User {
   role: UserRole
   is_active: boolean
   created_at: string
+  deleted_at?: string | null
 }
 
 /** A support-agent row used by manager assignment controls. */
@@ -81,6 +82,7 @@ export interface ChatMessage {
   citations?: Citation[]
   trace?: AgentTrace[]
   used_fallback?: boolean
+  artifacts?: Artifact[]
 }
 
 export interface AdminConversationSummary {
@@ -109,7 +111,7 @@ export interface AdminConversationDetail extends AdminConversationSummary {
 }
 
 export interface Citation {
-  document_id: number
+  document_id: number | string
   title: string
   excerpt: string
   score: number
@@ -121,12 +123,21 @@ export interface AgentTrace {
   detail: string
 }
 
+export interface Artifact {
+  kind: 'audio' | 'image'
+  media_url?: string | null
+  data_url?: string | null
+  content_type?: string | null
+  byte_size?: number | null
+}
+
 export interface ChatResponse {
   conversation_id: number
   answer: string
   citations: Citation[]
   trace: AgentTrace[]
   used_fallback: boolean
+  artifacts?: Artifact[]
   handoff_available?: boolean
 }
 
@@ -262,6 +273,39 @@ export interface Setting {
   value: string
   description: string
   updated_at: string
+}
+
+export interface UserCreatePayload {
+  email: string
+  password: string
+  display_name: string
+  role: UserRole
+  is_active: boolean
+}
+
+export interface UserResetPasswordPayload {
+  new_password: string
+}
+
+export interface AdminAuditLog {
+  id: number
+  admin_id: number
+  admin_name: string
+  action: string
+  target_type: string
+  target_id: number | null
+  target_name: string
+  detail: string
+  success: boolean
+  error_message: string
+  created_at: string
+}
+
+export interface AdminAuditLogPage {
+  items: AdminAuditLog[]
+  total: number
+  page: number
+  page_size: number
 }
 
 export interface DashboardOverview {

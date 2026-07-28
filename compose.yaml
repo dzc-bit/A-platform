@@ -10,6 +10,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       TOKEN_SECRET: ${TOKEN_SECRET:-change-this-before-production}
       TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-28800}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-replace-me-in-env}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
@@ -21,6 +22,9 @@ services:
       DIFY_TTS_API_KEY: ${DIFY_TTS_API_KEY:-}
       DIFY_IMAGE_API_KEY: ${DIFY_IMAGE_API_KEY:-}
       DIFY_MEDIA_ALLOWED_HOSTS: ${DIFY_MEDIA_ALLOWED_HOSTS:-}
+      DIFY_ROUTER_API_KEY: ${DIFY_ROUTER_API_KEY:-}
+      DIFY_CALLBACK_SECRET: ${DIFY_CALLBACK_SECRET:-}
+      DIFY_ROUTER_TIMEOUT_SECONDS: ${DIFY_ROUTER_TIMEOUT_SECONDS:-150}
     ports:
       - "127.0.0.1:8000:8000"
     # Lets the container reach the separately managed Dify stack on Docker

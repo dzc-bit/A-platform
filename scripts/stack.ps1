@@ -219,7 +219,8 @@ function Invoke-DemoSmoke {
     }
     $baseUri = "http://127.0.0.1:5173/api/v1"
     try {
-        $loginBody = @{ email = "enterprise@neusoft.local"; password = "Demo123!" } | ConvertTo-Json
+        if (-not $env:DEMO_PASSWORD) { Fail "DEMO_PASSWORD is required for demo smoke login." }
+        $loginBody = @{ email = "enterprise@neusoft.local"; password = $env:DEMO_PASSWORD } | ConvertTo-Json
         $login = Invoke-RestMethod -Method Post -Uri "$baseUri/auth/login" -ContentType "application/json" -Body $loginBody -TimeoutSec 15
         if (-not $login.access_token) { Fail "Demo smoke login returned no access token." }
         $headers = @{ Authorization = "Bearer $($login.access_token)" }

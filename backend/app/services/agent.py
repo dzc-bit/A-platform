@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Literal, TypedDict
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models import Message, SupportTicket
-from ..schemas import AgentTrace, Citation
+from ..schemas import AgentTrace, Artifact, Citation
 from .knowledge import RetrievalHit, retrieve
+from .dify import DifyGateway
 from .llm import (
     Completion,
     LLMHistoryMessage,
@@ -62,6 +63,7 @@ class AgentResult:
     trace: list[AgentTrace]
     used_fallback: bool
     category: str
+    artifacts: list[Artifact] = dataclass_field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -296,8 +298,9 @@ class BusinessAgentOrchestrator:
     tests deterministic while preserving a production migration path.
     """
 
-    def __init__(self, llm_client: OpenAICompatibleClient | None = None) -> None:
+    def __init__(self, llm_client: OpenAICompatibleClient | None = None, dify_gateway: DifyGateway | None = None) -> None:
         self.llm_client = llm_client or OpenAICompatibleClient()
+        self.dify_gateway = dify_gateway or DifyGateway()
         self.classification_agent = ClassificationAgent(self.classify)
         self.knowledge_query_agent = KnowledgeQueryAgent()
         self.response_agent = ResponseAgent()
@@ -310,6 +313,8 @@ class BusinessAgentOrchestrator:
         "订单查询": "order_query_privacy_notice",
         "付款咨询": "payment_manual_review",
         "合同咨询": "contract_review_handoff",
+        "语音生成": "dify_text_to_speech",
+        "图片生成": "dify_text_to_image",
     }
     _TOOL_RESULTS = {
         "system_incident_escalation": (
@@ -363,11 +368,59 @@ class BusinessAgentOrchestrator:
             description="Return the deterministic contract-review handoff guidance without contract data.",
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
         ),
+        "dify_text_to_speech": LLMToolDefinition(
+            name="dify_text_to_speech",
+            description="Convert text to speech audio via Dify TTS workflow. Returns a playable audio reference.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The text to convert to speech (1-6000 chars).",
+                    },
+                    "voice": {
+                        "type": "string",
+                        "description": "Voice style identifier. Defaults to 'Cherry'.",
+                    },
+                },
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+        ),
+        "dify_text_to_image": LLMToolDefinition(
+            name="dify_text_to_image",
+            description="Generate an image from a text prompt via Dify image workflow. Returns an image reference.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Description of the image to generate (1-2000 chars).",
+                    },
+                    "size": {
+                        "type": "string",
+                        "enum": [
+                            "1024x1024",
+                            "1280x720",
+                            "720x1280",
+                            "2048*2048",
+                            "2688*1536",
+                            "1536*2688",
+                        ],
+                        "description": "Output image size. Defaults to '1024x1024'.",
+                    },
+                },
+                "required": ["prompt"],
+                "additionalProperties": False,
+            },
+        ),
     }
 
     @staticmethod
     def classify(question: str) -> str:
         rules = {
+            "语音生成": ("转成语音", "朗读", "播报", "语音播放", "文字转语音", "tts", "读出来", "念出来"),
+            "图片生成": ("生成图片", "画一张", "生成一张", "文生图", "画个", "绘制", "生成图"),
             "工单统计": ("待处理工单", "工单数量", "客服队列", "工单积压"),
             "系统故障": ("故障", "不可用", "报错", "中断", "崩溃"),
             "合同咨询": ("合同", "条款", "审批", "法务"),
@@ -1226,3 +1279,195 @@ class BusinessAgentOrchestrator:
             used_fallback=used_fallback,
             category=category,
         )
+
+    # ------------------------------------------------------------------
+    # Dify callback support: media tools + LangGraph callback entry point
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_last_assistant_text(
+        context: list[dict[str, str]] | None,
+        db: Session | None = None,
+        conversation_id: int | None = None,
+    ) -> str | None:
+        """Resolve '上一条回复' / '这段回复' from context or conversation history."""
+        if context:
+            for msg in reversed(context):
+                if msg.get("role") == "assistant" and msg.get("content", "").strip():
+                    return msg["content"].strip()
+        if db is not None and conversation_id is not None:
+            row = db.execute(
+                select(Message.content)
+                .where(Message.conversation_id == conversation_id, Message.role == "assistant")
+                .order_by(Message.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if row and row.strip():
+                return row.strip()
+        return None
+
+    async def _execute_media_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, object],
+        user_id: str,
+    ) -> tuple[str, list[Artifact]]:
+        """Execute a Dify media tool asynchronously. Returns (tool_result_text, artifacts)."""
+        if tool_name == "dify_text_to_speech":
+            if not set(arguments) <= {"text", "voice"} or "text" not in arguments:
+                return "语音生成失败：工具参数不合法。", []
+            text_value = arguments.get("text")
+            voice_value = arguments.get("voice", "Cherry")
+            if not isinstance(text_value, str) or not isinstance(voice_value, str):
+                return "语音生成失败：工具参数不合法。", []
+            text = text_value.strip()
+            voice = voice_value.strip()
+            if not voice or voice.casefold() == "default":
+                voice = "Cherry"
+            if not text or len(text) > 6000 or len(voice) > 40:
+                return "语音生成失败：文本或音色参数不合法。", []
+            result = await self.dify_gateway.run_text_to_speech(text, voice, user_id)
+            if result.degraded or (not result.media_url and not result.data_url):
+                return f"语音生成服务暂不可用：{result.detail}", []
+            artifact = Artifact(
+                kind="audio",
+                media_url=result.media_url,
+                data_url=result.data_url,
+                content_type=result.content_type,
+                byte_size=result.byte_size,
+            )
+            return "语音生成成功，已返回可播放音频。", [artifact]
+
+        if tool_name == "dify_text_to_image":
+            if not set(arguments) <= {"prompt", "size"} or "prompt" not in arguments:
+                return "图片生成失败：工具参数不合法。", []
+            prompt_value = arguments.get("prompt")
+            size_value = arguments.get("size", "1024x1024")
+            if not isinstance(prompt_value, str) or not isinstance(size_value, str):
+                return "图片生成失败：工具参数不合法。", []
+            prompt = prompt_value.strip()
+            size = size_value.strip() or "1024x1024"
+            if not prompt or len(prompt) > 2000:
+                return "图片生成失败：提示词为空或超过2000字符限制。", []
+            valid_sizes = {
+                "1024x1024",
+                "1280x720",
+                "720x1280",
+                "2048*2048",
+                "2688*1536",
+                "1536*2688",
+            }
+            if size not in valid_sizes:
+                return "图片生成失败：画幅参数不合法。", []
+            result = await self.dify_gateway.run_text_to_image(prompt, size, user_id)
+            if result.degraded or (not result.media_url and not result.data_url):
+                return f"图片生成服务暂不可用：{result.detail}", []
+            artifact = Artifact(
+                kind="image",
+                media_url=result.media_url,
+                data_url=result.data_url,
+                content_type=result.content_type,
+                byte_size=result.byte_size,
+            )
+            return "图片生成成功，已返回图片。", [artifact]
+
+        return f"未知媒体工具：{tool_name}", []
+
+    async def run_callback(
+        self,
+        db: Session,
+        query: str,
+        *,
+        context: list[dict[str, str]] | None = None,
+        conversation_id: int | None = None,
+        user_id: str = "0",
+        route: str = "complex",
+        media_intent: str | None = None,
+    ) -> AgentResult:
+        """Entry point for Dify router workflow HTTP callback.
+
+        Handles both 'complex' (LangGraph multi-step) and 'media' (TTS/image)
+        routes.  Does NOT call the Dify router workflow (no recursion).
+        """
+        category = self.classify(query)
+        trace: list[AgentTrace] = []
+        artifacts: list[Artifact] = []
+
+        # Media route: resolve text reference and call Dify media tools directly.
+        if route == "media" or category in ("语音生成", "图片生成"):
+            if route == "media":
+                if media_intent == "image":
+                    category = "图片生成"
+                elif media_intent == "tts":
+                    category = "语音生成"
+                elif category not in ("语音生成", "图片生成"):
+                    image_markers = ("图片", "画一张", "画个", "绘制", "文生图")
+                    category = "图片生成" if any(marker in query for marker in image_markers) else "语音生成"
+            tool_name = self._tool_name_for_category(category)
+            if tool_name is None:  # Defensive: media categories are always whitelisted above.
+                return AgentResult(
+                    answer="无法识别媒体生成类型，请明确说明需要语音还是图片。",
+                    citations=[],
+                    trace=[AgentTrace(step="媒体工具 Agent", status="fallback", detail="媒体类型无效")],
+                    used_fallback=True,
+                    category=category,
+                    artifacts=[],
+                )
+
+            arguments: dict[str, object] = {}
+            if tool_name == "dify_text_to_speech":
+                # Resolve "上一条回复" / "这段回复" from context or DB.
+                resolved_text = self._resolve_last_assistant_text(context, db, conversation_id)
+                # If the query itself contains substantial text to convert, use it.
+                explicit_text = query
+                for phrase in ("帮我把", "请把", "将", "转成语音", "朗读", "转语音"):
+                    explicit_text = explicit_text.replace(phrase, "")
+                explicit_text = explicit_text.strip().strip("\"'")
+                references_reply = any(
+                    phrase in query for phrase in ("上一条回复", "这段回复", "上条回复", "刚才的回复")
+                )
+                text_to_speak = (
+                    resolved_text
+                    if resolved_text and (references_reply or not explicit_text or len(explicit_text) < 4)
+                    else explicit_text
+                )
+                if not text_to_speak:
+                    return AgentResult(
+                        answer="未找到可转换的文本内容。请先发送一条需要朗读的回复，或直接提供要转换的文字。",
+                        citations=[],
+                        trace=[AgentTrace(step="媒体工具 Agent", status="fallback", detail="无可朗读文本")],
+                        used_fallback=True,
+                        category=category,
+                        artifacts=[],
+                    )
+                arguments = {"text": text_to_speak[:6000], "voice": "Cherry"}
+            else:
+                # Image: extract prompt from query.
+                prompt_text = query
+                for phrase in ("帮我", "请", "生成一张", "生成图片", "画一张", "画个", "绘制", "文生图"):
+                    prompt_text = prompt_text.replace(phrase, "")
+                prompt_text = prompt_text.strip().strip("\"'") or query
+                arguments = {"prompt": prompt_text[:2000], "size": "1024x1024"}
+
+            tool_result, artifacts = await self._execute_media_tool(tool_name, arguments, user_id)
+            trace.append(AgentTrace(
+                step="媒体工具 Agent",
+                status="completed" if artifacts else "fallback",
+                detail=tool_result,
+            ))
+            answer = tool_result
+            if artifacts:
+                kind_label = "语音" if artifacts[0].kind == "audio" else "图片"
+                answer = f"已为你生成{kind_label}。"
+            return AgentResult(
+                answer=answer,
+                citations=[],
+                trace=trace,
+                used_fallback=not artifacts,
+                category=category,
+                artifacts=artifacts,
+            )
+
+        # Complex route: run the full LangGraph orchestration (no Dify router call).
+        result = await self.run(db, query, conversation_id=conversation_id)
+        return result

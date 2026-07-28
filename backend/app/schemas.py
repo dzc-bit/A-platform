@@ -20,6 +20,7 @@ class UserOut(APIModel):
     role: Role
     is_active: bool
     created_at: datetime
+    deleted_at: datetime | None = None
 
 
 class UserPreferenceUpdate(BaseModel):
@@ -58,7 +59,7 @@ class ChatRequest(BaseModel):
 
 
 class Citation(BaseModel):
-    document_id: int
+    document_id: int | str
     title: str
     excerpt: str
     score: float
@@ -70,12 +71,23 @@ class AgentTrace(BaseModel):
     detail: str
 
 
+class Artifact(BaseModel):
+    """A media artifact produced by a tool (TTS audio, generated image)."""
+
+    kind: Literal["audio", "image"]
+    media_url: str | None = None
+    data_url: str | None = None
+    content_type: str | None = None
+    byte_size: int | None = Field(default=None, ge=1)
+
+
 class ChatResponse(BaseModel):
     conversation_id: int
     answer: str
     citations: list[Citation]
     trace: list[AgentTrace]
     used_fallback: bool
+    artifacts: list[Artifact] = Field(default_factory=list)
     # A normal AI answer can offer a deliberate handoff without changing the
     # existing answer/citation contract.  The client decides when to invoke
     # the explicit handoff endpoint.
@@ -147,6 +159,7 @@ class MessageOut(APIModel):
     role: str
     content: str
     created_at: datetime
+    artifacts: list[Artifact] = Field(default_factory=list)
     # Keep ``role`` for backwards compatibility with the orchestration and
     # existing clients.  New clients should render the explicit actor fields.
     sender_role: str = "system"
@@ -381,6 +394,39 @@ class UserRoleUpdate(BaseModel):
     is_active: bool
 
 
+class UserCreate(BaseModel):
+    email: str = Field(min_length=5, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+    display_name: str = Field(min_length=2, max_length=80)
+    role: Role = "enterprise_user"
+    is_active: bool = True
+
+
+class UserResetPassword(BaseModel):
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class AdminAuditLogOut(APIModel):
+    id: int
+    admin_id: int
+    admin_name: str
+    action: str
+    target_type: str
+    target_id: int | None = None
+    target_name: str
+    detail: str
+    success: bool
+    error_message: str
+    created_at: datetime
+
+
+class AdminAuditLogPage(BaseModel):
+    items: list[AdminAuditLogOut]
+    total: int
+    page: int
+    page_size: int
+
+
 class DifyWorkflowRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
 
@@ -430,6 +476,41 @@ class DifyMediaResponse(BaseModel):
     data_url: str | None = None
     content_type: str
     byte_size: int | None = Field(default=None, ge=1)
+
+
+# ---------------------------------------------------------------------------
+# LangGraph internal callback (Dify HTTP node → FastAPI)
+# ---------------------------------------------------------------------------
+
+
+class LangGraphContextMessage(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str = Field(max_length=8000)
+
+
+class LangGraphCallbackRequest(BaseModel):
+    """Request from Dify router workflow HTTP callback node."""
+
+    query: str = Field(min_length=1, max_length=4000)
+    context: list[LangGraphContextMessage] = Field(default_factory=list, max_length=20)
+    conversation_id: int | None = Field(default=None, ge=1)
+    user_id: str = Field(min_length=1, max_length=64)
+    route: Literal["complex", "media"] = "complex"
+    media_intent: Literal["tts", "image"] | None = None
+    request_id: str = Field(max_length=128)
+    route_depth: int = Field(default=1, ge=1)
+
+
+class LangGraphCallbackResponse(BaseModel):
+    """Response returned to Dify router workflow."""
+
+    answer: str
+    category: str = ""
+    citations: list[Citation] = Field(default_factory=list)
+    trace: list[AgentTrace] = Field(default_factory=list)
+    artifacts: list[Artifact] = Field(default_factory=list)
+    need_clarification: bool = False
+    used_fallback: bool = False
 
 
 # ``ConversationOut`` refers to ``MessageOut`` because the conversation

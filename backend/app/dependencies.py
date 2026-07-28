@@ -25,7 +25,7 @@ def get_current_user(
         )
     payload = decode_access_token(credentials.credentials)
     user = db.get(User, int(payload["sub"]))
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or user.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="账户不可用")
     return user
 

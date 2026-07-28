@@ -70,7 +70,9 @@ workflow:
                 clean = " ".join((text or "").split()).strip()
                 if not clean or len(clean) > 6000:
                     raise ValueError("text must contain 1-6000 characters")
-                selected_voice = (voice or "default").strip()
+                selected_voice = (voice or "").strip()
+                if not selected_voice or selected_voice.casefold() == "default":
+                    selected_voice = "Cherry"
                 if len(selected_voice) > 40:
                     raise ValueError("voice is too long")
                 return {"text": clean, "voice": selected_voice}

@@ -73,6 +73,12 @@ class Settings:
     dify_tts_api_key: str | None = os.getenv("DIFY_TTS_API_KEY")
     dify_image_api_key: str | None = os.getenv("DIFY_IMAGE_API_KEY")
     dify_media_allowed_hosts: tuple[str, ...] = _host_allowlist()
+    # Dify router workflow: the entry-point workflow that classifies requests
+    # and routes to knowledge base or LangGraph callback.
+    dify_router_api_key: str | None = os.getenv("DIFY_ROUTER_API_KEY")
+    dify_router_timeout_seconds: int = int(os.getenv("DIFY_ROUTER_TIMEOUT_SECONDS", "150"))
+    # Shared secret for Dify HTTP callback node → FastAPI internal tool endpoint.
+    dify_callback_secret: str | None = os.getenv("DIFY_CALLBACK_SECRET")
 
 
 settings = Settings()

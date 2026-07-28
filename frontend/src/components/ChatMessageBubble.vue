@@ -1,10 +1,17 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { CheckCheck, Clipboard, LoaderCircle, Volume2 } from 'lucide-vue-next'
 import { difyApi, errorMessage } from '@/api/client'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useSpeech } from '@/composables/useSpeech'
-import type { ChatMessage } from '@/types'
+import type { Artifact, ChatMessage } from '@/types'
+
+interface ArtifactState {
+  artifact: Artifact
+  source: string
+  loading: boolean
+  error: string
+}
 
 const props = defineProps<{ message: ChatMessage }>()
 const audioSource = ref('')
@@ -13,9 +20,12 @@ const voiceLoading = ref(false)
 const voicePlaying = ref(false)
 const voiceError = ref('')
 const browserFallbackAvailable = ref(false)
+const artifactStates = ref<ArtifactState[]>([])
 const { speak } = useSpeech()
 let audio: HTMLAudioElement | undefined
 let audioObjectUrl = ''
+let artifactLoadGeneration = 0
+const artifactObjectUrls = new Set<string>()
 
 function roleLabel(role: ChatMessage['role']) {
   if (role === 'user' || role === 'enterprise_user') return '企业用户'
@@ -44,6 +54,50 @@ function releaseAudioObjectUrl() {
   if (!audioObjectUrl) return
   URL.revokeObjectURL(audioObjectUrl)
   audioObjectUrl = ''
+}
+
+function releaseArtifactObjectUrls() {
+  for (const url of artifactObjectUrls) URL.revokeObjectURL(url)
+  artifactObjectUrls.clear()
+}
+
+async function loadArtifacts(artifacts: Artifact[] | undefined) {
+  const generation = ++artifactLoadGeneration
+  releaseArtifactObjectUrls()
+  artifactStates.value = (artifacts ?? []).map((artifact) => ({
+    artifact,
+    source: artifact.data_url || '',
+    loading: Boolean(artifact.media_url) || (artifact.kind === 'image' && Boolean(artifact.data_url)),
+    error: '',
+  }))
+
+  await Promise.all(artifactStates.value.map(async (state) => {
+    if (!state.artifact.media_url || state.source) return
+    try {
+      const media = await difyApi.mediaProxy({
+        url: state.artifact.media_url,
+        kind: state.artifact.kind,
+      })
+      if (generation !== artifactLoadGeneration) return
+      const source = URL.createObjectURL(media)
+      artifactObjectUrls.add(source)
+      state.source = source
+      state.loading = state.artifact.kind === 'image'
+    } catch (caught) {
+      if (generation !== artifactLoadGeneration) return
+      state.loading = false
+      state.error = errorMessage(caught)
+    }
+  }))
+}
+
+function artifactLoaded(state: ArtifactState) {
+  state.loading = false
+}
+
+function artifactFailed(state: ArtifactState) {
+  state.loading = false
+  state.error = state.artifact.kind === 'image' ? '生成的图片暂时无法显示' : '生成的音频暂时无法播放'
 }
 
 async function playVoice() {
@@ -96,9 +150,13 @@ async function copyMessage() {
 }
 
 onBeforeUnmount(() => {
+  artifactLoadGeneration += 1
   stopAudio()
   releaseAudioObjectUrl()
+  releaseArtifactObjectUrls()
 })
+
+watch(() => props.message.artifacts, loadArtifacts, { immediate: true, deep: true })
 </script>
 
 <template>
@@ -112,6 +170,31 @@ onBeforeUnmount(() => {
       <div class="message-bubble" :class="{ 'message-bubble--error': message.error }">
         <span v-if="message.pending" class="typing-dots"><i /><i /><i /></span>
         <p v-else>{{ message.content }}</p>
+      </div>
+      <div v-if="artifactStates.length" class="message-artifacts">
+        <div v-for="(state, index) in artifactStates" :key="`${state.artifact.kind}-${index}`" class="message-artifact">
+          <div v-if="state.loading" class="message-artifact-loading"><LoaderCircle class="is-spinning" :size="17" />正在加载媒体</div>
+          <img
+            v-if="state.artifact.kind === 'image' && state.source"
+            class="message-artifact-image"
+            :class="{ 'message-artifact-image--loading': state.loading }"
+            :src="state.source"
+            alt="AI 生成图片"
+            @load="artifactLoaded(state)"
+            @error="artifactFailed(state)"
+          />
+          <audio
+            v-else-if="state.artifact.kind === 'audio' && state.source"
+            class="message-artifact-audio"
+            :src="state.source"
+            controls
+            preload="metadata"
+            aria-label="AI 生成语音"
+            @loadedmetadata="artifactLoaded(state)"
+            @error="artifactFailed(state)"
+          />
+          <p v-if="state.error" class="message-artifact-error" role="alert">{{ state.error }}</p>
+        </div>
       </div>
       <div v-if="message.citations?.length" class="citation-list">
         <p class="section-label">知识依据</p>

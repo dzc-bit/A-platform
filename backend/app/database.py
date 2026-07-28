@@ -71,6 +71,12 @@ def _ensure_demo_schema_compatibility() -> None:
             "requester_id": "INTEGER",
             "conversation_id": "INTEGER",
         },
+        "messages": {
+            "artifacts_json": "TEXT DEFAULT '[]'",
+        },
+        "users": {
+            "deleted_at": "DATETIME",
+        },
     }
     with engine.begin() as connection:
         inspector = inspect(connection)
@@ -98,3 +104,27 @@ def _ensure_demo_schema_compatibility() -> None:
                 connection.execute(
                     text('CREATE INDEX IF NOT EXISTS "ix_support_tickets_conversation_id" ON "support_tickets" (conversation_id)')
                 )
+        # Admin audit log table for existing databases.
+        connection.execute(
+            text(
+                'CREATE TABLE IF NOT EXISTS "admin_audit_logs" ('
+                "id INTEGER PRIMARY KEY, "
+                "admin_id INTEGER NOT NULL REFERENCES users(id), "
+                "admin_name VARCHAR(80) DEFAULT '', "
+                "action VARCHAR(64) NOT NULL, "
+                "target_type VARCHAR(32) DEFAULT '', "
+                "target_id INTEGER, "
+                "target_name VARCHAR(160) DEFAULT '', "
+                "detail TEXT DEFAULT '', "
+                "success BOOLEAN DEFAULT 1, "
+                "error_message TEXT DEFAULT '', "
+                "created_at DATETIME DEFAULT (datetime('now'))"
+                ")"
+            )
+        )
+        connection.execute(
+            text('CREATE INDEX IF NOT EXISTS "ix_admin_audit_logs_admin_id" ON "admin_audit_logs" (admin_id)')
+        )
+        connection.execute(
+            text('CREATE INDEX IF NOT EXISTS "ix_admin_audit_logs_action" ON "admin_audit_logs" (action)')
+        )
