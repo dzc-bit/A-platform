@@ -26,7 +26,7 @@
 | 前端 | Vue 3 + Vite + TypeScript + Pinia + Vue Router |
 | 后端 | FastAPI + SQLite + LangChain（RAG / LCEL）+ LangGraph（StateGraph） |
 | AI | 本地混合 RAG（FAISS + 稀疏关键词 RRF）、OpenAI-compatible 适配器、Dify 工作流增强 |
-| 部署 | Docker Compose / Kubernetes（Kustomize 清单）、GitHub Actions CI/CD |
+| 部署 | Docker Compose、GitHub Actions CI/CD |
 
 ## 架构
 
@@ -186,7 +186,7 @@ AI 能力按环境变量分三档渐进，从零配置的完全离线到 Dify �
 ## 测试与质量
 
 - **测试套件**：`backend/tests` 下 20 个 pytest 测试模块，覆盖 API 契约、流式响应、RAG 检索、Dify 路由回调、工单状态契约、实时交接、部署配置等
-- **CI（GitHub Actions）**：后端编译检查与确定性 Agent/RAG 评测指标、前端类型检查与构建、Kustomize 清单渲染、Compose 全栈构建与健康冒烟测试
+- **CI（GitHub Actions）**：后端编译检查与确定性 Agent/RAG 评测指标、前端类型检查与构建、Compose 全栈构建与健康冒烟测试
 - **评测数据集**：`backend/evaluations` 提供 Agent 与 RAG 评测数据，`python scripts/evaluate_agent.py` 输出可复现的确定性指标
 - **可解释性**：所有回答返回检索引用、Agent 轨迹与 `used_fallback` 状态，便于解释 AI 决策过程
 
@@ -239,17 +239,14 @@ AI 能力按环境变量分三档渐进，从零配置的完全离线到 Dify �
 │   ├── day8-preflight.md         # Dify 接入预检要点
 │   └── knowledge/                # 知识库样例
 │
-├── deploy/
-│   └── k8s/                      # Kubernetes 部署清单（backend / frontend / redis / ingress ...）
-│
 ├── scripts/
 │   └── stack.ps1                 # 本平台 + 官方 Dify 的隔离一键编排
 │
 └── .github/
-    └── workflows/                # CI（ci.yml）、镜像发布（release.yml）
+    └── workflows/                # CI（ci.yml）
 ```
 
-> 说明：应用运行只需 `backend/`、`frontend/`、`dify/`、`deploy/`、`scripts/`、`compose.yaml` 与 `.env`。`.env`、`.venv`、`node_modules`、`dist`、`.pytest_cache` 等为本地产物，已被 `.gitignore` 忽略。
+> 说明：应用运行只需 `backend/`、`frontend/`、`dify/`、`scripts/`、`compose.yaml` 与 `.env`。`.env`、`.venv`、`node_modules`、`dist`、`.pytest_cache` 等为本地产物，已被 `.gitignore` 忽略。
 
 ## 文档索引
 

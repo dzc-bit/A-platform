@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from dify.day8_preflight import (
+    DIFY_ROOT,
     _api_root,
     build_static_report,
     dsl_compatibility,
@@ -14,7 +17,17 @@ from dify.day8_preflight import (
     load_acceptance_cases,
 )
 
+# These checks compare workflow templates against a vendored official Dify
+# checkout under .runtime/dify, which is gitignored and only exists on
+# machines that ran the local Dify stack.
+requires_local_dify = pytest.mark.skipif(
+    not (DIFY_ROOT / "docker" / "docker-compose.yaml").is_file()
+    or not (DIFY_ROOT / "api" / "constants" / "dsl_version.py").is_file(),
+    reason="local official Dify checkout (.runtime/dify) is not available",
+)
 
+
+@requires_local_dify
 def test_day8_static_report_covers_official_stack_and_synthetic_corpus() -> None:
     report = build_static_report()
 
@@ -42,6 +55,7 @@ def test_acceptance_questions_map_to_source_ids_without_uploading_answers() -> N
     assert all(check.passed for check in checks)
 
 
+@requires_local_dify
 def test_official_dify_compose_and_dsl_warning_are_reported() -> None:
     _, compose_checks = inspect_official_docker()
     dsl, dsl_checks = inspect_workflow_templates()
