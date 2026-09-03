@@ -11,6 +11,7 @@ import pytest
 
 from .conftest import login
 from app import api as api_module
+from app.routers import shared as api_shared
 from app.services import dify as dify_module
 from app.services.dify import DifyFetchedMedia, DifyGateway, DifyMediaResult
 
@@ -351,7 +352,7 @@ def test_media_proxy_endpoint_returns_verified_bytes(client, monkeypatch: pytest
         assert (url, kind) == ("https://media.example/audio.wav", "audio")
         return DifyFetchedMedia(payload=payload, content_type="audio/wav")
 
-    monkeypatch.setattr(api_module.dify_gateway, "fetch_remote_media", fake_fetch)
+    monkeypatch.setattr(api_shared.dify_gateway, "fetch_remote_media", fake_fetch)
     response = client.post(
         "/api/v1/dify/media/proxy",
         headers=login(client),
@@ -402,7 +403,7 @@ def test_tts_endpoint_returns_verified_external_url(client, monkeypatch: pytest.
         assert (text, voice, user) == ("请稍候", "default", "1")
         return _remote_media("audio", media_url="https://media.example/signed/audio")
 
-    monkeypatch.setattr(api_module.dify_gateway, "run_text_to_speech", fake_tts)
+    monkeypatch.setattr(api_shared.dify_gateway, "run_text_to_speech", fake_tts)
     response = client.post(
         "/api/v1/dify/text-to-speech",
         headers=login(client),
@@ -429,7 +430,7 @@ def test_image_endpoint_returns_verified_data_url(client, monkeypatch: pytest.Mo
         assert (prompt, size, user) == ("商务办公室", "1024x1024", "1")
         return _remote_media("image", data_url=png_data_url)
 
-    monkeypatch.setattr(api_module.dify_gateway, "run_text_to_image", fake_image)
+    monkeypatch.setattr(api_shared.dify_gateway, "run_text_to_image", fake_image)
     response = client.post(
         "/api/v1/dify/text-to-image",
         headers=login(client),
@@ -458,7 +459,7 @@ def test_media_endpoint_does_not_fabricate_success_when_dify_is_unavailable(clie
             status_code=503,
         )
 
-    monkeypatch.setattr(api_module.dify_gateway, "run_text_to_image", unavailable)
+    monkeypatch.setattr(api_shared.dify_gateway, "run_text_to_image", unavailable)
     response = client.post(
         "/api/v1/dify/image",
         headers=login(client),

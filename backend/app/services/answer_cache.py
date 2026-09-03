@@ -88,6 +88,7 @@ def serialize_agent_result(result: AgentResult) -> str:
             "trace": [trace.model_dump() for trace in result.trace],
             "used_fallback": result.used_fallback,
             "category": result.category,
+            "quality_score": result.quality_score,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -109,6 +110,7 @@ def deserialize_agent_result(raw: str | None) -> AgentResult | None:
             trace=[AgentTrace.model_validate(item) for item in payload.get("trace", [])],
             used_fallback=bool(payload.get("used_fallback")),
             category=str(payload.get("category", "一般咨询")),
+            quality_score=float(payload.get("quality_score") or 0.0),
         )
     except (TypeError, ValueError, json.JSONDecodeError):
         return None

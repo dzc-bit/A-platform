@@ -130,7 +130,7 @@ def test_stream_complete_joins_multiline_data_and_streamed_tool_arguments_by_ind
                                 "id": "call_order_1",
                                 "type": "function",
                                 "function": {
-                                    "name": "order_query_privacy_notice",
+                                    "name": "order_status_lookup",
                                     "arguments": '{"order',
                                 },
                             }
@@ -173,7 +173,7 @@ def test_stream_complete_joins_multiline_data_and_streamed_tool_arguments_by_ind
     assert [event.index for event in markers] == [0, 0]
     assert len(terminal.completion.tool_calls) == 1
     assert terminal.completion.tool_calls[0].id == "call_order_1"
-    assert terminal.completion.tool_calls[0].name == "order_query_privacy_notice"
+    assert terminal.completion.tool_calls[0].name == "order_status_lookup"
     assert terminal.completion.tool_calls[0].arguments == {"order_id": "A-42"}
     assert terminal.completion.tool_call_parse_failed is False
 
@@ -191,7 +191,7 @@ def test_stream_complete_rejects_tool_arguments_over_incremental_limit(
                             "id": "call_order_1",
                             "type": "function",
                             "function": {
-                                "name": "order_query_privacy_notice",
+                                "name": "order_status_lookup",
                                 "arguments": "x" * 4_097,
                             },
                         }

@@ -35,6 +35,7 @@ SETTING_DEFAULTS: dict[str, str] = {
     "conversation_memory_messages": "6",
     "retrieval_cache_ttl_seconds": "300",
     "answer_cache_ttl_seconds": "300",
+    "answer_groundedness_threshold": "0.15",
     "dify_status": "未配置，当前使用本地演示工作流",
 }
 
@@ -52,6 +53,7 @@ SETTING_DESCRIPTIONS: dict[str, str] = {
     "conversation_memory_messages": "每次模型调用带入的本会话历史消息数（0-12）",
     "retrieval_cache_ttl_seconds": "相同检索请求的缓存秒数（30-3600）",
     "answer_cache_ttl_seconds": "相同用户与上下文的最终回答缓存秒数（0-3600，0 为关闭）",
+    "answer_groundedness_threshold": "回答与知识依据一致度质检阈值（0.01-1.00，低于阈值触发转人工建议）",
     "dify_status": "Dify 工作流连接状态说明",
 }
 
@@ -77,6 +79,7 @@ class RuntimeSettings:
     conversation_memory_messages: int
     retrieval_cache_ttl_seconds: int
     answer_cache_ttl_seconds: int
+    answer_groundedness_threshold: float
     # Appended defaults keep positional construction by older integrations
     # compatible while exposing the administrator-controlled runtime knobs.
     default_language: str = "zh-CN"
@@ -108,6 +111,16 @@ def _validate_integer(key: str, value: str, minimum: int, maximum: int) -> str:
     if not minimum <= parsed <= maximum:
         raise ValueError(f"{key} 必须在 {minimum}-{maximum} 之间")
     return str(parsed)
+
+
+def _validate_float(key: str, value: str, minimum: float, maximum: float) -> str:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise ValueError(f"{key} 必须是 {minimum}-{maximum} 之间的数值") from error
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{key} 必须在 {minimum}-{maximum} 之间")
+    return f"{parsed:.2f}"
 
 
 def validate_setting(key: str, value: str) -> str:
@@ -156,6 +169,8 @@ def validate_setting(key: str, value: str) -> str:
         return _validate_integer(key, normalized, 30, 3600)
     if key == "answer_cache_ttl_seconds":
         return _validate_integer(key, normalized, 0, 3600)
+    if key == "answer_groundedness_threshold":
+        return _validate_float(key, normalized, 0.01, 1.0)
     if not normalized or len(normalized) > 255:
         raise ValueError("dify_status 不能为空且不能超过 255 个字符")
     return normalized
@@ -194,4 +209,5 @@ def get_runtime_settings(db: Session) -> RuntimeSettings:
         conversation_memory_messages=int(values["conversation_memory_messages"]),
         retrieval_cache_ttl_seconds=int(values["retrieval_cache_ttl_seconds"]),
         answer_cache_ttl_seconds=int(values["answer_cache_ttl_seconds"]),
+        answer_groundedness_threshold=float(values["answer_groundedness_threshold"]),
     )

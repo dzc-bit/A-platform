@@ -5,7 +5,7 @@ import os
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import AISetting, KnowledgeDocument, SupportTicket, User
+from ..models import AISetting, KnowledgeDocument, Order, SupportTicket, User
 from ..security import hash_password
 from .knowledge import index_document
 from .runtime_settings import SETTING_DEFAULTS, SETTING_DESCRIPTIONS, ensure_runtime_settings
@@ -113,6 +113,43 @@ def seed_demo_data(db: Session) -> None:
             quality_score=0.97,
         ),
     ]
+    orders = [
+        Order(
+            order_ref="A-1024",
+            product="智慧客服标准版年度订阅",
+            customer_email="enterprise@neusoft.local",
+            status="履约中",
+            stage_detail="服务开通已完成，坐席配置联调中",
+        ),
+        Order(
+            order_ref="A-1025",
+            product="知识库检索增强模块",
+            customer_email="enterprise@neusoft.local",
+            status="待验收",
+            stage_detail="交付物已提交，等待客户验收确认",
+        ),
+        Order(
+            order_ref="A-1026",
+            product="数据分析看板扩展包",
+            customer_email="enterprise@neusoft.local",
+            status="待确认",
+            stage_detail="合同已签署，等待排产确认",
+        ),
+        Order(
+            order_ref="B-2077",
+            product="专属云部署实施服务",
+            customer_email="enterprise@neusoft.local",
+            status="已完成",
+            stage_detail="已交付并完成验收，进入质保期",
+        ),
+        Order(
+            order_ref="C-3001",
+            product="语音识别接口包（演示客户）",
+            customer_email="other-customer@example.test",
+            status="履约中",
+            stage_detail="接口联调进行中",
+        ),
+    ]
     ai_settings = [
         AISetting(key=key, value=value, description=SETTING_DESCRIPTIONS[key])
         for key, value in SETTING_DEFAULTS.items()
@@ -121,7 +158,7 @@ def seed_demo_data(db: Session) -> None:
     db.flush()
     for document in knowledge:
         index_document(db, document)
-    db.add_all([*tickets, *ai_settings])
+    db.add_all([*tickets, *orders, *ai_settings])
     db.commit()
     if ensure_runtime_settings(db):
         db.commit()

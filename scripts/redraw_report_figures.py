@@ -307,7 +307,7 @@ def figure_45() -> Image.Image:
     rects = [
         ((80, 170, 420, 405), ["AuthService", "+ issue_token()", "+ require_role()", "+ get_current_user()"]),
         ((590, 170, 950, 405), ["KnowledgeService", "+ ingest_document()", "+ hybrid_search()", "+ rebuild_index()"]),
-        ((1110, 170, 1515, 405), ["BusinessAgentOrchestrator", "+ classify()", "+ retrieve()", "+ quality_check()"]),
+        ((1110, 170, 1515, 405), ["AssistantWorkflow", "+ intent_route()", "+ retrieve()", "+ groundedness_gate()"]),
         ((300, 610, 680, 845), ["TicketService", "+ create_ticket()", "+ save_draft()", "+ publish_event()"]),
         ((930, 610, 1350, 845), ["DifyGateway / CacheService", "+ call_remote()", "+ fallback()", "+ build_cache_key()"]),
     ]

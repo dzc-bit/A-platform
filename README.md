@@ -5,18 +5,20 @@
 
 面向企业客户、客服人员、系统管理员和决策者的全栈 AI 助手平台，提供智能对话、知识库检索、客服工单、运营看板与 AI 配置管理，主线为 **Vue 3 + FastAPI**。
 
-它最大的特点是**默认零密钥、完全离线可运行**：没有云端 API Key 也能跑通"混合 RAG + LangGraph 多智能体编排 + 流式响应"的完整链路，并返回真实检索引用与 Agent 轨迹；配置 OpenAI-compatible 服务或 Dify 后，同一套代码按环境变量平滑增强，业务逻辑无需改动。这让整个系统的行为完全可复现，也便于离线环境演示与测试。
+它最大的特点是**默认零密钥、完全离线可运行**：没有云端 API Key 也能跑通"混合检索 + LangGraph 工作流 + 受控工具 Agent + 流式响应"的完整链路，并返回真实检索引用与工作流轨迹；配置 OpenAI-compatible 服务或 Dify 后，同一套代码按环境变量平滑增强，业务逻辑无需改动。这让整个系统的行为完全可复现，也便于离线环境演示与测试。
 
 ## 功能特性
 
-- **智能助手**：SSE 逐 Token 流式输出；回答附带检索引用、Agent 执行轨迹与 `used_fallback` 状态，AI 决策过程可解释
-- **混合 RAG**：确定性本地 Embedding，FAISS 与稀疏关键词加权 RRF 融合检索，可离线验证检索质量
-- **多智能体编排**：LangGraph `StateGraph` 组织任务规划、分类/检索并行、白名单工具路由、回复计划质检与有界重试（最多一次，无循环风险）
-- **Dify 混合路由**：Router 工作流对请求做 A（简单知识）/ B（复杂任务）/ C（媒体生成）意图分类，按类别选择执行位置；Dify 未配置、超时或失败时自动降级到本地 Orchestrator
+- **智能助手**：SSE 逐 Token 流式输出；回答附带检索引用、工作流轨迹与 `used_fallback` 状态，AI 决策过程可解释
+- **意图理解（两次独立 LLM 调用）**：`QueryRewriter` 先把口语化问题改写为知识库规范表述（只改写不回答、不添加信息、保留单号标识符），`IntentRouter` 再判断处理难度（knowledge / complex / media）并归类；两者共用同一份规则表——规则同时渲染进提示词并做输出后置校验，非法输出带错误重问一次，离线时降级为关键词规则
+- **混合检索**：确定性本地 Embedding，FAISS 与稀疏关键词加权 RRF 融合的词面级检索，可离线验证；Embedding 实现了 LangChain `Embeddings` 契约，可单点替换为真实语义模型
+- **受控工具 Agent**：模型在 3 个真工具（工单队列聚合、订单状态查询、创建人工复核工单）的白名单内自主选择工具、自拟参数；参数经 schema 严格校验，被拒调用会把原因回喂给模型自我纠正，循环硬上限 3 轮；无 LLM 时由类别映射确定性驱动同一白名单
+- **回答质检（GroundednessGate）**：以回答与检索片段的一致度打分替代"字数达标"式检查，阈值可由管理员配置；未过阈值触发一次更严格的重试，仍不合格则降级为带转人工建议的模板回复
+- **Dify 混合路由**：Router 工作流对请求做 A（简单知识）/ B（复杂任务）/ C（媒体生成）意图分类，与本地意图路由语义对齐；Dify 未配置、超时或失败时自动降级到本地工作流
 - **媒体与语音**：TTS 朗读与文生图经 Dify 子工作流返回真实 artifacts；浏览器语音输入与朗读基于 Web Speech API，不支持时自动回退完整文本流程
-- **客服工单**：受保护 SSE 实时更新；白名单只读工具仅返回工单队列聚合，不暴露客户记录
-- **运营看板**：近 7 日咨询与 AI 质检趋势按消息、工单时间戳聚合；无历史数据时明确显示"暂无历史对比"，不虚构对比
-- **管理与审计**：用户、知识库、AI 配置与审计日志；合同、付款、订单、故障等高风险问题不臆造业务事实，信息不足时提示补充并转人工核验
+- **客服工单**：受保护 SSE 实时更新；工具只读、不暴露客户明细，高风险问题转人工复核工单
+- **运营看板**：近 7 日咨询与回答质检趋势按消息、工单时间戳聚合；质检分来自一致性门禁而非硬编码规则；无历史数据时明确显示"暂无历史对比"
+- **管理与审计**：用户、知识库、AI 配置与审计日志；合同、付款、订单、故障等高风险问题不臆造业务事实
 - **回答缓存**：按用户、会话、知识/工单版本、模型设置与偏好隔离；缓存命中使用明确的 `origin=cache` 标记，不会切片冒充模型 Token
 
 ## 技术栈
@@ -24,32 +26,40 @@
 | 层 | 技术 |
 | --- | --- |
 | 前端 | Vue 3 + Vite + TypeScript + Pinia + Vue Router |
-| 后端 | FastAPI + SQLite + LangChain（RAG / LCEL）+ LangGraph（StateGraph） |
-| AI | 本地混合 RAG（FAISS + 稀疏关键词 RRF）、OpenAI-compatible 适配器、Dify 工作流增强 |
+| 后端 | FastAPI + SQLite（Alembic 迁移）+ LangChain（RAG / LCEL）+ LangGraph（StateGraph） |
+| AI | 本地混合检索（FAISS + 稀疏关键词 RRF，Embedding 单点可替换）、OpenAI-compatible 适配器、Dify 工作流增强 |
 | 部署 | Docker Compose、GitHub Actions CI/CD |
 
 ## 架构
 
-前端始终只访问 FastAPI；FastAPI 统一负责认证、会话持久化、密钥隔离、结果归一化与失败降级，Dify API Key 不下发到浏览器。三层 AI 组件各司其职：
+前端始终只访问 FastAPI；FastAPI 统一负责认证、会话持久化、密钥隔离、结果归一化与失败降级，Dify API Key 不下发到浏览器。
+
+**Agent 与 workflow 的取舍**：本项目刻意只保留一个"真 Agent"——工具调用。判断标准是"是否存在需要模型自主决策的环节"：改写、路由、检索、质检都是单次输入→输出的确定性步骤，做成 workflow 节点（规则进提示词 + 输出后置校验），可靠、可测试、可复现；只有工具选择需要模型在白名单内自主决定"调不调、调哪个、传什么参数"，因此做成有界 Agent 循环。由此 LLM 在链路中有四个独立、各自可追溯的出现位置：
+
+```text
+QueryRewriter（改写）→ IntentRouter（路由）→ [知识检索] → ToolAgent（工具循环，仅 complex 路由）→ 最终生成 → GroundednessGate（质检）
+```
+
+三层 AI 组件各司其职：
 
 | 组件 | 职责 |
 | --- | --- |
 | Dify | 可视化工作流与外部能力平台：Router 对请求做 A/B/C 意图分类，A 类直接执行知识检索与回答生成，B/C 类经 HTTP 节点回调 FastAPI；另承载 TTS、文生图子工作流 |
 | LangChain | 后端 AI 组件层：`Document`、文本切分、Embedding/FAISS、提示词与会话记忆，LCEL `RunnableParallel`/`RunnableBranch` 组织证据与谨慎分支 |
-| LangGraph | 后端复杂任务状态编排层：任务规划、并行分类/检索、白名单工具路由、回复计划质检与有界重试 |
+| LangGraph | 后端工作流编排层：`StateGraph` 组织改写 → 路由 → 检索 → 条件工具/提示词组装 → 计划门禁的确定性骨架；远程模型调用留在图外，保证超时不打断检索与工具安全 |
 
 ### 请求路由
 
 | 路由 | 典型请求 | 执行位置 |
 | --- | --- | --- |
 | A：简单知识 | 企业制度、FAQ、稳定产品说明 | Dify Router 分类后直接执行知识库检索与回答生成；FastAPI 只归一化并持久化结果 |
-| B：复杂任务 | 多步推理、工单统计、数据库聚合、订单/合同/付款等需工具或人工复核的任务 | LangGraph 编排复杂任务；LangChain/FAISS 提供本地检索与提示词组件；白名单工具只返回获准的数据或聚合 |
+| B：复杂任务 | 多步推理、工单统计、订单进度查询、故障/付款/合同等需工具或人工复核的任务 | Dify Router 分类后调用受保护的回调接口；本地 ToolAgent 在白名单内自主选择工具并执行，LangChain/FAISS 提供本地检索与提示词组件 |
 | C：媒体生成 | 朗读上一条回复、把这段话转成语音、生成一张图片 | Dify Router 分类为 `tts` 或 `image`，由对应 Dify 媒体子工作流返回 `artifacts` |
-| Router 降级 | Dify 未配置、超时、失败或空输出 | FastAPI 直接运行本地 `BusinessAgentOrchestrator`，由 LangGraph + LangChain/RAG 完成回答；图不可用时退到顺序编排 |
+| Router 降级 | Dify 未配置、超时、失败或空输出 | FastAPI 直接运行本地工作流：改写 → 路由 → 检索 → 受控工具 Agent → 生成 → 质检；图不可用时退到顺序编排 |
 
-Dify 分类 JSON 无法解析或类别不合法时安全降级到 B 类，避免把需要工具或人工复核的问题误送到简单知识分支。这里的 A/B/C 是 Dify 的外层路由；LangGraph 内部还会细分"工单统计""系统故障""合同咨询""一般咨询"等业务类别，两组分类不可混用。
+Dify 分类 JSON 无法解析或类别不合法时安全降级到 B 类，避免把需要工具或人工复核的问题误送到简单知识分支。这里的 A/B/C 是 Dify 的外层路由；本地 `IntentRouter` 输出的难度路由与它语义对齐，LangGraph 内部还会细分"工单统计""系统故障""合同咨询"等业务类别，两组分类不可混用。
 
-回调接口 `POST /api/v1/tools/langgraph/run` 是 Dify HTTP 节点专用的内部接口：要求 `X-Dify-Callback-Secret`，拒绝 `route_depth > 1`，并校验 `conversation_id` 与 `user_id` 的归属。复杂任务回调只运行后端 Orchestrator、不会再次调用 Router，因此不存在 `FastAPI → Dify Router → FastAPI → Dify Router` 的递归；C 类媒体路径调用 TTS/文生图子工作流后也不会再进入 Router。
+回调接口 `POST /api/v1/tools/langgraph/run` 是 Dify HTTP 节点专用的内部接口：要求 `X-Dify-Callback-Secret`，拒绝 `route_depth > 1`，并校验 `conversation_id` 与 `user_id` 的归属。复杂任务回调只运行本地工作流、不会再次调用 Router，因此不存在 `FastAPI → Dify Router → FastAPI → Dify Router` 的递归；C 类媒体路径调用 TTS/文生图子工作流后也不会再进入 Router。
 
 ### B 类复杂任务完整调用链
 
@@ -58,9 +68,10 @@ sequenceDiagram
     participant UI as Vue 前端
     participant API as FastAPI 安全代理
     participant Dify as Dify Router
-    participant Agent as BusinessAgentOrchestrator
+    participant WF as AssistantWorkflow
     participant Graph as LangGraph StateGraph
-    participant Chain as LangChain / 本地 RAG
+    participant Agent as ToolAgent（白名单循环）
+    participant Chain as LangChain / 本地检索
     participant Model as 后端 LLM
 
     UI->>API: POST /api/v1/assistant/chat 或 /api/v1/assistant/chat/stream
@@ -68,24 +79,26 @@ sequenceDiagram
     Dify->>Dify: LLM 分类为 B / complex
     Dify->>API: POST /api/v1/tools/langgraph/run<br/>route=complex, route_depth=1
     API->>API: 校验共享 Secret、递归深度和会话归属
-    API->>Agent: run_callback(route=complex)
-    Agent->>Graph: invoke StateGraph
-    Graph->>Chain: 并行分类、FAISS 检索、提示词/记忆组装
-    Chain-->>Graph: 分类、引用与回复上下文
-    Graph->>Graph: 白名单工具路由、回复计划校验与有界重试
-    Graph-->>Agent: category / citations / response_plan
-    Agent->>Model: 最终 completion（已配置时）
-    Model-->>Agent: 回答文本
-    Agent->>Agent: 最终质检与邮件草稿步骤
-    Agent-->>API: answer / citations / trace / category
+    API->>WF: run_callback(route=complex)
+    WF->>WF: QueryRewriter 改写（LLM #1）<br/>IntentRouter 路由（LLM #2）
+    WF->>Graph: invoke StateGraph
+    Graph->>Chain: 知识检索、提示词组装
+    WF->>Agent: 复杂任务进入有界循环
+    Agent->>Model: 自选工具、自拟参数（LLM #3，≤3 轮）
+    Model-->>Agent: 工具调用 / 最终回答
+    Agent->>Agent: schema 校验，拒绝时回喂原因自纠
+    Agent->>Model: 最终生成（LLM #4）
+    Model-->>WF: 回答文本
+    WF->>WF: GroundednessGate 一致性质检
+    WF-->>API: answer / citations / trace / category
     API-->>Dify: 结构化回调响应
     Dify-->>API: Router 工作流统一输出
     API-->>UI: ChatResponse（并写入会话历史）
 ```
 
-LangGraph 内部的主要节点顺序为：`task_planner` → `classification_agent` 与 `knowledge_query_agent` 并行 → `parallel_join` → 按分类选择 `business_tool_agent` → `response_agent` → `response_plan_quality` → `finish`。回复计划质检失败最多重试一次。最终模型 completion、最终回答质检和邮件草稿步骤在同步 `StateGraph` 完成后执行。
+LangGraph 内部的确定性骨架为：`task_planner` → `query_rewriter` → `intent_router` → `knowledge_retrieval` → `route_dispatch` →（complex 时）`tool_agent` → `prompt_composer` → `groundedness_plan_gate` → `finish`。远程模型调用不进入同步图：超时的模型无法打断检索、工具白名单校验和提示词组装；LLM 决策（改写与路由）在图外完成后作为状态传入，离线时图内关键词规则接管。
 
-最终回答缓存命中时会直接返回缓存并跳过 Dify Router 与 LangGraph。Router 启用时，前端仍调用 SSE 接口，但后端会等待 Dify blocking 工作流完成再发送 `trace`、`reset` 和 `done`；只有本地 Orchestrator 路径支持模型 Token 的逐段流式输出。
+最终回答缓存命中时会直接返回缓存并跳过 Dify Router 与本地工作流。Router 启用时，前端仍调用 SSE 接口，但后端会等待 Dify blocking 工作流完成再发送 `trace`、`reset` 和 `done`；只有本地工作流路径支持模型 Token 的逐段流式输出。
 
 ## 快速启动
 
@@ -157,15 +170,15 @@ AI 能力按环境变量分三档渐进，从零配置的完全离线到 Dify �
 
 ### 第 1 档：离线运行（默认，零密钥）
 
-系统使用 LangChain `Document`、`RecursiveCharacterTextSplitter`、确定性本地 Embedding、FAISS 与稀疏关键词加权 RRF 完成可离线验证的混合 RAG。LCEL 使用 `RunnableParallel`/`RunnableBranch` 组织证据与谨慎分支，并组合最近窗口和有界摘要记忆；LangGraph `StateGraph` 执行受控任务分解、分类/检索并行、条件工具路由和有界重试。真实只读 SQLite 工具只返回工单队列聚合，不暴露客户记录。
+系统使用 LangChain `Document`、`RecursiveCharacterTextSplitter`、确定性本地 Embedding、FAISS 与稀疏关键词加权 RRF 完成可离线验证的混合检索。LCEL 使用 `RunnableParallel`/`RunnableBranch` 组织证据与谨慎分支，并组合最近窗口和有界摘要记忆；LangGraph `StateGraph` 执行改写降级、关键词路由、条件工具驱动和计划门禁。订单查询等真工具读取 SQLite 演示数据，只返回状态与聚合，不暴露客户明细。
 
 ### 第 2 档：OpenAI-compatible 模型
 
-设置 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` 后，适配器会使用 `stream=true` 消费提供方 SSE delta，并将模型 Token 即时转发给前端；客户端取消会关闭上游流，异常会在首 Token 前回退或在部分 Token 后以 `reset` 修正。
+设置 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` 后，LLM 在链路的四个位置依次生效：`QueryRewriter` 规范化改写（5 秒超时，失败回退原始问题）、`IntentRouter` 难度路由与分类（非法输出带错误重问一次，仍失败走关键词规则）、`ToolAgent` 白名单工具循环（模型自选工具、自拟参数，schema 校验拒绝时回喂原因，上限 3 轮）、最终回答生成。首响前的改写与路由是精度换延迟的自觉选择，两者独立超时、独立降级。最终回答通过 `stream=true` 消费提供方 SSE delta 并即时转发给前端；客户端取消会关闭上游流，异常在首 Token 前回退或在部分 Token 后以 `reset` 修正。
 
 ### 第 3 档：Dify 工作流增强
 
-设置 `DIFY_API_URL` 和 `DIFY_ROUTER_API_KEY` 后，主对话入口优先调用已发布的 Dify Router 工作流。Dify 未配置、超时、返回空结果或执行失败时，FastAPI 会在同一数据库会话中执行本地 LangGraph/RAG Agent，并返回真实 `citations` 与 `trace`，而不是固定的泛化文案。
+设置 `DIFY_API_URL` 和 `DIFY_ROUTER_API_KEY` 后，主对话入口优先调用已发布的 Dify Router 工作流。Dify 未配置、超时、返回空结果或执行失败时，FastAPI 会在同一数据库会话中执行本地工作流（改写 → 路由 → 检索 → 受控工具 Agent → 生成 → 质检），并返回真实 `citations` 与 `trace`，而不是固定的泛化文案。
 
 `dify/` 中提供 Router、扩展客服、TTS 和文生图四个工作流 DSL 模板；`scripts/stack.ps1` 只负责容器编排，不代替 Dify 界面配置。
 
@@ -185,10 +198,23 @@ AI 能力按环境变量分三档渐进，从零配置的完全离线到 Dify �
 
 ## 测试与质量
 
-- **测试套件**：`backend/tests` 下 20 个 pytest 测试模块，覆盖 API 契约、流式响应、RAG 检索、Dify 路由回调、工单状态契约、实时交接、部署配置等
+- **测试套件**：`backend/tests` 下 20 个 pytest 测试模块，覆盖 API 契约、流式响应、意图路由与改写、受控工具循环、回答质检、Dify 路由回调、工单状态契约、实时交接、部署配置等
 - **CI（GitHub Actions）**：后端编译检查与确定性 Agent/RAG 评测指标、前端类型检查与构建、Compose 全栈构建与健康冒烟测试
-- **评测数据集**：`backend/evaluations` 提供 Agent 与 RAG 评测数据，`python scripts/evaluate_agent.py` 输出可复现的确定性指标
-- **可解释性**：所有回答返回检索引用、Agent 轨迹与 `used_fallback` 状态，便于解释 AI 决策过程
+- **评测数据集**：`backend/evaluations` 提供 Agent 与检索评测数据，`python scripts/evaluate_agent.py` 输出可复现的确定性指标（分类准确率、Top-3 命中率、引用可溯源率、核心轨迹覆盖率、安全转人工率）
+- **可解释性**：所有回答返回检索引用、工作流轨迹（改写 → 路由 → 工具调用 → 生成 → 质检）与 `used_fallback` 状态，便于解释 AI 决策过程
+
+## 数据迁移
+
+数据库 schema 由 Alembic 管理（`backend/migrations`），迁移脚本连接应用同一套配置（根 `.env` 或 `DATABASE_URL`，可用 `ALEMBIC_DATABASE_URL` 覆盖）：
+
+```powershell
+Set-Location backend
+alembic upgrade head          # 应用迁移
+alembic revision --autogenerate -m "describe change"   # 依据 models 生成新迁移
+alembic downgrade -1          # 回滚上一版
+```
+
+零配置演示仍默认 `create_all` 建表；已存在的演示卷通过兼容引导补齐缺失列。生产或团队协作场景一律以 Alembic 为准；切换 PostgreSQL 时仅需更换连接串并重放迁移。
 
 ## 仓库结构
 
@@ -202,15 +228,18 @@ AI 能力按环境变量分三档渐进，从零配置的完全离线到 Dify �
 │
 ├── backend/                      # FastAPI 后端（应用源码与测试）
 │   ├── app/
-│   │   ├── api.py                # 路由与接口实现（API 主文件）
+│   │   ├── api.py                # 聚合路由入口（领域模块见 routers/）
+│   │   ├── routers/              # 按领域拆分的路由：auth / users / chat / knowledge / support / admin / dashboard / media / system
 │   │   ├── main.py               # 应用入口
-│   │   ├── models.py             # 数据库模型
+│   │   ├── models.py             # 数据库模型（含演示订单表）
 │   │   ├── schemas.py            # Pydantic 数据契约
 │   │   ├── config.py             # 配置加载
-│   │   ├── database.py           # 数据库会话
+│   │   ├── database.py           # 数据库会话与零配置建表
 │   │   ├── dependencies.py       # 依赖注入
 │   │   ├── security.py           # 认证与密钥
-│   │   └── services/             # 业务服务：agent / rag / dify / llm / cache / vision / 审计 ...
+│   │   └── services/             # 业务服务：workflow / rag / dify / llm / cache / vision / 审计 ...
+│   ├── migrations/               # Alembic 迁移（env 读取应用配置，含基线迁移）
+│   ├── alembic.ini
 │   ├── tests/                    # pytest 测试套件
 │   ├── evaluations/              # AI 评测脚本与数据集
 │   ├── scripts/                  # 后端辅助脚本（如 evaluate_agent.py）
@@ -260,7 +289,7 @@ AI 能力按环境变量分三档渐进，从零配置的完全离线到 Dify �
 
 - 事件 Broker 接入 Redis Pub/Sub，支持多实例部署下的实时工单推送
 - 基于 Dify 会话变量的多轮澄清追问回路（当前 `need_clarification` 固定为 `false`）
-- Dify Router 路径下的逐段流式输出（当前仅本地 Orchestrator 路径支持 Token 级流式）
+- Dify Router 路径下的逐段流式输出（当前仅本地工作流路径支持 Token 级流式）
 - 生产化增强：托管数据库、受控对象存储、密钥管理、审计与监控服务接入
 
 ## License

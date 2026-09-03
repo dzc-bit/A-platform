@@ -9,9 +9,10 @@ from sqlalchemy import func, select
 
 from .conftest import login
 from app import api as api_module
+from app.routers import shared as api_shared
 from app.database import SessionLocal
 from app.models import Conversation, KnowledgeChunk, Message, SupportTicket, User
-from app.services.agent import BusinessAgentOrchestrator
+from app.services.agent import AssistantWorkflow
 from app.services.dify import DifyWorkflowResult
 from app.services.vision import VisionAnalysisResult
 
@@ -62,7 +63,7 @@ def test_offline_agent_evaluation_set_meets_acceptance_threshold() -> None:
         ("账号密码无法登录", "账户访问"),
         ("付款金额需要核对", "付款咨询"),
     ]
-    agent = BusinessAgentOrchestrator()
+    agent = AssistantWorkflow()
     accuracy = sum(agent.classify(question) == expected for question, expected in cases) / len(cases)
     assert accuracy >= 0.8
 
@@ -144,7 +145,7 @@ def test_seeded_user_can_chat_with_retrieval_citations(client: TestClient) -> No
     assert payload["conversation_id"] > 0
     assert payload["citations"]
     assert "发票" in payload["answer"]
-    assert {step["step"] for step in payload["trace"]} >= {"分类 Agent", "知识检索 Agent", "质检 Agent"}
+    assert {step["step"] for step in payload["trace"]} >= {"意图路由", "知识检索", "回答质检"}
 
 
 def test_streaming_chat_emits_trace_token_and_done_events(client: TestClient) -> None:
@@ -160,12 +161,12 @@ def test_streaming_chat_emits_trace_token_and_done_events(client: TestClient) ->
     assert "event: trace" in response.text
     assert "event: token" in response.text
     assert "event: done" in response.text
-    assert response.text.index("请求调度") < response.text.index("分类 Agent")
+    assert response.text.index("请求调度") < response.text.index("意图路由")
 
 
 def test_final_answer_cache_reuses_identical_context_for_json_and_stream(client: TestClient, monkeypatch) -> None:
-    original_run = api_module.orchestrator.run
-    original_stream = api_module.orchestrator.stream
+    original_run = api_shared.workflow.run
+    original_stream = api_shared.workflow.stream
     calls = {"run": 0, "stream": 0}
 
     async def counting_run(*args, **kwargs):
@@ -177,8 +178,8 @@ def test_final_answer_cache_reuses_identical_context_for_json_and_stream(client:
         async for event in original_stream(*args, **kwargs):
             yield event
 
-    monkeypatch.setattr(api_module.orchestrator, "run", counting_run)
-    monkeypatch.setattr(api_module.orchestrator, "stream", counting_stream)
+    monkeypatch.setattr(api_shared.workflow, "run", counting_run)
+    monkeypatch.setattr(api_shared.workflow, "stream", counting_stream)
     headers = login(client)
     payload = {"message": "开票申请需要准备什么材料？", "mode": "knowledge"}
 
@@ -215,14 +216,14 @@ def test_final_answer_cache_reuses_identical_context_for_json_and_stream(client:
 def test_final_answer_cache_invalidates_for_same_timestamp_ticket_distribution_changes(
     client: TestClient, monkeypatch
 ) -> None:
-    original_run = api_module.orchestrator.run
+    original_run = api_shared.workflow.run
     calls = {"run": 0}
 
     async def counting_run(*args, **kwargs):
         calls["run"] += 1
         return await original_run(*args, **kwargs)
 
-    monkeypatch.setattr(api_module.orchestrator, "run", counting_run)
+    monkeypatch.setattr(api_shared.workflow, "run", counting_run)
     headers = login(client)
     fixed_updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -274,7 +275,7 @@ def test_image_analysis_accepts_supported_images_without_persisting_bytes(client
         observed.update({"image_bytes": image_bytes, "media_type": media_type, "prompt": prompt, "model": model})
         return VisionAnalysisResult(answer="图片中可见一张红色状态提示卡。", used_fallback=False, detail="测试视觉模型")
 
-    monkeypatch.setattr(api_module.vision_service, "analyze", fake_analyze)
+    monkeypatch.setattr(api_shared.vision_service, "analyze", fake_analyze)
     response = client.post(
         "/api/v1/assistant/image-analysis",
         headers=headers,
@@ -542,7 +543,7 @@ def test_ticket_mutations_publish_realtime_events(client: TestClient, monkeypatc
     async def capture(event: dict[str, object]) -> None:
         published.append(event)
 
-    monkeypatch.setattr(api_module.ticket_event_broker, "publish", capture)
+    monkeypatch.setattr(api_shared.ticket_event_broker, "publish", capture)
     user_headers = login(client)
     created = client.post(
         "/api/v1/support/tickets",
@@ -724,9 +725,9 @@ def test_dify_endpoint_has_a_local_fallback_without_credentials(client: TestClie
     assert payload["citations"]
     assert {step["step"] for step in payload["trace"]} >= {
         "Dify Gateway",
-        "分类 Agent",
-        "知识检索 Agent",
-        "质检 Agent",
+        "意图路由",
+        "知识检索",
+        "回答质检",
     }
     assert "合同" in payload["answer"]
 
@@ -741,7 +742,7 @@ def test_dify_endpoint_runs_local_agent_after_remote_failure(client: TestClient,
             detail="远程 Dify 调用失败：ConnectError",
         )
 
-    monkeypatch.setattr(api_module.dify_gateway, "run_customer_service", unavailable_gateway)
+    monkeypatch.setattr(api_shared.dify_gateway, "run_customer_service", unavailable_gateway)
     headers = login(client)
     response = client.post(
         "/api/v1/dify/customer-service",
@@ -771,7 +772,7 @@ def test_dify_remote_response_allows_empty_local_evidence(client: TestClient, mo
             detail="Dify 工作流调用成功",
         )
 
-    monkeypatch.setattr(api_module.dify_gateway, "run_customer_service", successful_gateway)
+    monkeypatch.setattr(api_shared.dify_gateway, "run_customer_service", successful_gateway)
     headers = login(client)
     response = client.post(
         "/api/v1/dify/customer-service",

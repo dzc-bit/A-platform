@@ -257,10 +257,11 @@ class OpenAICompatibleClient:
         tool_results: Sequence[LLMToolResult],
         model: str | None,
         stream: bool,
+        temperature: float | None = None,
     ) -> dict[str, object]:
         payload: dict[str, object] = {
             "model": model or settings.llm_model,
-            "temperature": 0.2,
+            "temperature": temperature if temperature is not None else 0.2,
             "messages": cls._messages(system_prompt, user_prompt, history, tool_results),
         }
         if stream:
@@ -279,6 +280,8 @@ class OpenAICompatibleClient:
         tools: Sequence[LLMToolDefinition] = (),
         tool_results: Sequence[LLMToolResult] = (),
         model: str | None = None,
+        timeout: float | None = None,
+        temperature: float | None = None,
     ) -> Completion:
         if not settings.llm_api_key:
             return Completion(text=None, used_fallback=True, reason="未配置 LLM_API_KEY")
@@ -292,8 +295,9 @@ class OpenAICompatibleClient:
                 tool_results=tool_results,
                 model=model,
                 stream=False,
+                temperature=temperature,
             )
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with httpx.AsyncClient(timeout=timeout or 20) as client:
                 response = await client.post(
                     endpoint,
                     headers={"Authorization": f"Bearer {settings.llm_api_key}"},

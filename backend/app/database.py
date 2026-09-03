@@ -38,7 +38,9 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_database() -> None:
-    # Import models before metadata creation so all table declarations are registered.
+    # Zero-config bootstrap: create_all registers every table on a fresh
+    # database. Schema changes are managed by Alembic (backend/migrations);
+    # this bootstrap only stays compatible with pre-existing demo volumes.
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
@@ -46,12 +48,12 @@ def init_database() -> None:
 
 
 def _ensure_demo_schema_compatibility() -> None:
-    """Add the small set of nullable demo columns to an existing SQLite volume.
+    """Keep pre-Alembic demo SQLite volumes usable after an upgrade.
 
-    The course stack intentionally does not use Alembic.  ``create_all`` does
-    not alter an already-created SQLite table, so this idempotent bootstrap is
-    needed when a user upgrades the demo without deleting its named volume.
-    New databases already contain these columns and perform no work here.
+    ``create_all`` does not alter an already-created SQLite table, so this
+    idempotent bootstrap adds the nullable demo columns an old named volume
+    may be missing. New databases (including Alembic-migrated ones) already
+    contain these columns and perform no work here.
     """
     if not settings.database_url.startswith("sqlite"):
         return

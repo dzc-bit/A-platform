@@ -68,7 +68,7 @@ Router 的 B/C 分支会从 Dify 内部调用 `POST /api/v1/tools/langgraph/run`
 - Dify 是可选的增强服务，不作为本地 Compose 的必需依赖。
 - 后端是 AI 能力的统一入口；主对话前端只调用 `/api/v1/assistant/chat/stream`，流在收到有效内容前失败时才回退 `/api/v1/assistant/chat`，不直连 Dify。`/api/v1/dify/customer-service` 是独立客服工作流接口，不是当前主对话入口。
 - Dify Gateway 本身不访问业务数据库；它只返回远程回答或降级原因。
-- Router 不可用、调用凭据缺失、超时、响应结构错误或返回空回答时，FastAPI API 层使用请求数据库会话运行 `BusinessAgentOrchestrator`，返回真实本地 RAG 回答、`citations` 和 Agent `trace`，不使用固定泛化文案。当前本地降级轨迹不承诺包含 Router 的失败原因。
+- Router 不可用、调用凭据缺失、超时、响应结构错误或返回空回答时，FastAPI API 层使用请求数据库会话运行 `AssistantWorkflow`，返回真实本地 RAG 回答、`citations` 和 Agent `trace`，不使用固定泛化文案。当前本地降级轨迹不承诺包含 Router 的失败原因。
 - Router 会将 A/B/C 分支前缀输出归一化为统一的 `answer`、`citations`、`trace`、`artifacts`、`category` 和 `used_fallback`；独立客服工作流仍可能只返回答案文本。
 - 不要把调用凭据、数据集 ID、客户文件、生产提示词或未脱敏业务资料提交到 Git。
 

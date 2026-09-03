@@ -297,6 +297,14 @@ def _faiss_index(db: Session) -> Any | None:
     return _build_faiss_index(db, version)
 
 
+def text_similarity(left: str, right: str) -> float:
+    """Cosine similarity of deterministic local embeddings (normalized vectors)."""
+
+    left_vector = _hash_embedding(left)
+    right_vector = _hash_embedding(right)
+    return sum(a * b for a, b in zip(left_vector, right_vector))
+
+
 def _sparse_fallback(db: Session, query: str, top_k: int) -> list[RetrievalHit]:
     """Keep retrieval available if an optional vector dependency is temporarily absent."""
     query_vector = _tokens(query)

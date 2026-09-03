@@ -178,6 +178,23 @@ class SupportTicket(TimestampMixin, Base):
     quality_score: Mapped[float] = mapped_column(Float, default=0.0)
 
 
+class Order(TimestampMixin, Base):
+    """Demo order records backing the read-only order lookup tool.
+
+    The tool intentionally exposes only the current status, stage note and a
+    masked contact email; no price, contract or personal data is returned.
+    """
+
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    order_ref: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    product: Mapped[str] = mapped_column(String(160))
+    customer_email: Mapped[str] = mapped_column(String(255), index=True)
+    status: Mapped[str] = mapped_column(String(24))
+    stage_detail: Mapped[str] = mapped_column(Text, default="")
+
+
 class AISetting(TimestampMixin, Base):
     __tablename__ = "ai_settings"
 

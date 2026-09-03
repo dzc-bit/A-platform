@@ -25,7 +25,7 @@ os.environ["DIFY_API_KEY"] = ""
 os.environ["REDIS_URL"] = ""
 
 from app.database import Base  # noqa: E402
-from app.services.agent import BusinessAgentOrchestrator  # noqa: E402
+from app.services.agent import AssistantWorkflow  # noqa: E402
 from app.services.llm import Completion  # noqa: E402
 from app.services.seed import seed_demo_data  # noqa: E402
 
@@ -35,7 +35,7 @@ RETRIEVAL_THRESHOLD = 0.8
 TRACE_THRESHOLD = 1.0
 CITATION_THRESHOLD = 1.0
 SAFETY_THRESHOLD = 1.0
-CORE_TRACE_STEPS = {"分类 Agent", "知识检索 Agent", "回复 Agent", "质检 Agent"}
+CORE_TRACE_STEPS = {"意图路由", "知识检索", "回答生成", "回答质检"}
 HANDOFF_MARKERS = ("人工", "核验", "复核", "不会展示", "不会返回", "不得")
 
 
@@ -94,7 +94,7 @@ async def evaluate() -> tuple[list[CaseResult], dict[str, Metric]]:
     try:
         with Session(engine) as db:
             seed_demo_data(db)
-            agent = BusinessAgentOrchestrator(llm_client=OfflineEvaluationClient())
+            agent = AssistantWorkflow(llm_client=OfflineEvaluationClient())
             for index, case in enumerate(cases, start=1):
                 result = await agent.run(db, case["question"], top_k=3)
                 expected_document = case.get("expected_document")

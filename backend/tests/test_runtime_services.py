@@ -13,7 +13,7 @@ from app.config import settings
 from app.database import Base
 from app.models import AISetting, Conversation, Message, User
 from app.services import cache as cache_module
-from app.services.agent import BusinessAgentOrchestrator
+from app.services.agent import AssistantWorkflow
 from app.services.cache import RetrievalCache, retrieval_cache
 from app.services.events import TicketEventBroker
 from app.services.llm import Completion, LLMHistoryMessage
@@ -121,7 +121,7 @@ def test_chat_uses_configured_prompt_top_k_and_bounded_conversation_history(seed
     retrieval_cache.clear()
     llm = CapturingLLM()
     result = asyncio.run(
-        BusinessAgentOrchestrator(llm_client=llm).run(
+        AssistantWorkflow(llm_client=llm).run(
             seeded_db,
             question,
             conversation_id=conversation.id,
@@ -145,7 +145,7 @@ def test_chat_uses_configured_prompt_top_k_and_bounded_conversation_history(seed
 def test_chat_includes_user_preference_instruction_in_model_prompt(seeded_db: Session) -> None:
     llm = CapturingLLM()
     asyncio.run(
-        BusinessAgentOrchestrator(llm_client=llm).run(
+        AssistantWorkflow(llm_client=llm).run(
             seeded_db,
             "客服首次响应时限是多久？",
             preference_instruction="使用英文详细回答，并保留依据与下一步。",
@@ -163,7 +163,7 @@ def test_chat_reads_admin_language_and_reply_strategy(seeded_db: Session) -> Non
 
     llm = CapturingLLM()
     asyncio.run(
-        BusinessAgentOrchestrator(llm_client=llm).run(
+        AssistantWorkflow(llm_client=llm).run(
             seeded_db,
             "客服首次响应时限是多久？",
         )

@@ -10,8 +10,9 @@ import yaml
 from fastapi.testclient import TestClient
 
 from app import api as api_module
+from app.routers import shared as api_shared
 from app.schemas import AgentTrace, Artifact
-from app.services.agent import AgentResult, BusinessAgentOrchestrator
+from app.services.agent import AgentResult, AssistantWorkflow
 from app.services.dify import DifyMediaResult, DifyWorkflowResult
 
 from .conftest import login
@@ -41,15 +42,15 @@ def test_langgraph_callback_rejects_missing_or_wrong_secret(
     provided_secret: str | None,
 ) -> None:
     monkeypatch.setattr(
-        api_module,
+        api_shared,
         "settings",
-        replace(api_module.settings, dify_callback_secret=CALLBACK_SECRET),
+        replace(api_shared.settings, dify_callback_secret=CALLBACK_SECRET),
     )
 
     async def must_not_run(*_args: object, **_kwargs: object) -> AgentResult:
         raise AssertionError("unauthenticated callback reached the orchestrator")
 
-    monkeypatch.setattr(api_module.orchestrator, "run_callback", must_not_run)
+    monkeypatch.setattr(api_shared.workflow, "run_callback", must_not_run)
     headers = {"X-Dify-Callback-Secret": provided_secret} if provided_secret else {}
 
     response = client.post(
@@ -66,9 +67,9 @@ def test_langgraph_callback_accepts_correct_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        api_module,
+        api_shared,
         "settings",
-        replace(api_module.settings, dify_callback_secret=CALLBACK_SECRET),
+        replace(api_shared.settings, dify_callback_secret=CALLBACK_SECRET),
     )
     received: dict[str, object] = {}
 
@@ -83,7 +84,7 @@ def test_langgraph_callback_accepts_correct_secret(
             artifacts=[],
         )
 
-    monkeypatch.setattr(api_module.orchestrator, "run_callback", fake_run_callback)
+    monkeypatch.setattr(api_shared.workflow, "run_callback", fake_run_callback)
     response = client.post(
         "/api/v1/tools/langgraph/run",
         headers={"X-Dify-Callback-Secret": CALLBACK_SECRET},
@@ -118,15 +119,15 @@ def test_langgraph_callback_rejects_recursive_route_depth(
     route_depth: int,
 ) -> None:
     monkeypatch.setattr(
-        api_module,
+        api_shared,
         "settings",
-        replace(api_module.settings, dify_callback_secret=CALLBACK_SECRET),
+        replace(api_shared.settings, dify_callback_secret=CALLBACK_SECRET),
     )
 
     async def must_not_run(*_args: object, **_kwargs: object) -> AgentResult:
         raise AssertionError("recursive callback reached the orchestrator")
 
-    monkeypatch.setattr(api_module.orchestrator, "run_callback", must_not_run)
+    monkeypatch.setattr(api_shared.workflow, "run_callback", must_not_run)
     response = client.post(
         "/api/v1/tools/langgraph/run",
         headers={"X-Dify-Callback-Secret": CALLBACK_SECRET},
@@ -174,7 +175,7 @@ class RecordingMediaGateway:
 
 def test_media_callback_routes_tts_and_image_to_dify_tools() -> None:
     gateway = RecordingMediaGateway()
-    orchestrator = BusinessAgentOrchestrator(dify_gateway=gateway)  # type: ignore[arg-type]
+    orchestrator = AssistantWorkflow(dify_gateway=gateway)  # type: ignore[arg-type]
 
     tts_result = asyncio.run(
         orchestrator.run_callback(
@@ -201,7 +202,7 @@ def test_media_callback_routes_tts_and_image_to_dify_tools() -> None:
 
 def test_tts_callback_resolves_the_latest_assistant_reply() -> None:
     gateway = RecordingMediaGateway()
-    orchestrator = BusinessAgentOrchestrator(dify_gateway=gateway)  # type: ignore[arg-type]
+    orchestrator = AssistantWorkflow(dify_gateway=gateway)  # type: ignore[arg-type]
 
     result = asyncio.run(
         orchestrator.run_callback(
@@ -238,7 +239,7 @@ def test_media_failure_never_returns_a_fake_artifact() -> None:
                 status_code=503,
             )
 
-    orchestrator = BusinessAgentOrchestrator(dify_gateway=UnavailableGateway())  # type: ignore[arg-type]
+    orchestrator = AssistantWorkflow(dify_gateway=UnavailableGateway())  # type: ignore[arg-type]
     result = asyncio.run(
         orchestrator.run_callback(
             None,  # type: ignore[arg-type]
@@ -255,7 +256,7 @@ def test_media_failure_never_returns_a_fake_artifact() -> None:
 
 def test_tts_tool_normalizes_default_voice_to_cherry() -> None:
     gateway = RecordingMediaGateway()
-    orchestrator = BusinessAgentOrchestrator(dify_gateway=gateway)  # type: ignore[arg-type]
+    orchestrator = AssistantWorkflow(dify_gateway=gateway)  # type: ignore[arg-type]
 
     for arguments in (
         {"text": "已审核答复"},
@@ -295,7 +296,7 @@ def test_tts_workflow_prepare_text_normalizes_default_voice_to_cherry() -> None:
 
 def test_invalid_media_arguments_do_not_call_dify() -> None:
     gateway = RecordingMediaGateway()
-    orchestrator = BusinessAgentOrchestrator(dify_gateway=gateway)  # type: ignore[arg-type]
+    orchestrator = AssistantWorkflow(dify_gateway=gateway)  # type: ignore[arg-type]
 
     _, artifacts = asyncio.run(
         orchestrator._execute_media_tool(
@@ -331,10 +332,10 @@ def test_router_failure_falls_back_to_local_orchestrator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        api_module,
+        api_shared,
         "settings",
         replace(
-            api_module.settings,
+            api_shared.settings,
             dify_api_url="https://dify.example",
             dify_router_api_key="router-key",
         ),
@@ -366,8 +367,8 @@ def test_router_failure_falls_back_to_local_orchestrator(
             artifacts=[Artifact(kind="image", media_url="https://media.example/local.png")],
         )
 
-    monkeypatch.setattr(api_module.dify_gateway, "run_router_workflow", unavailable_router)
-    monkeypatch.setattr(api_module.orchestrator, "run", local_run)
+    monkeypatch.setattr(api_shared.dify_gateway, "run_router_workflow", unavailable_router)
+    monkeypatch.setattr(api_shared.workflow, "run", local_run)
     response = client.post(
         "/api/v1/assistant/chat",
         headers=login(client),
@@ -394,10 +395,10 @@ def test_router_success_parses_stringified_artifacts_and_sends_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        api_module,
+        api_shared,
         "settings",
         replace(
-            api_module.settings,
+            api_shared.settings,
             dify_api_url="https://dify.example",
             dify_router_api_key="router-key",
         ),
@@ -434,7 +435,7 @@ def test_router_success_parses_stringified_artifacts_and_sends_context(
             status_code=200,
         )
 
-    monkeypatch.setattr(api_module.dify_gateway, "run_router_workflow", successful_router)
+    monkeypatch.setattr(api_shared.dify_gateway, "run_router_workflow", successful_router)
     response = client.post(
         "/api/v1/assistant/chat",
         headers=login(client),
@@ -460,10 +461,10 @@ def test_media_artifact_survives_conversation_history_reload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        api_module,
+        api_shared,
         "settings",
         replace(
-            api_module.settings,
+            api_shared.settings,
             dify_api_url="https://dify.example",
             dify_router_api_key="router-key",
         ),
@@ -498,8 +499,8 @@ def test_media_artifact_survives_conversation_history_reload(
             status_code=200,
         )
 
-    monkeypatch.setattr(api_module.dify_gateway, "run_router_workflow", successful_router)
-    monkeypatch.setattr(api_module.ticket_event_broker, "publish", capture_event)
+    monkeypatch.setattr(api_shared.dify_gateway, "run_router_workflow", successful_router)
+    monkeypatch.setattr(api_shared.ticket_event_broker, "publish", capture_event)
     headers = login(client)
     chat_response = client.post(
         "/api/v1/assistant/chat",
@@ -552,10 +553,10 @@ def test_router_success_parses_branch_prefixed_outputs(
     expected_kind: str | None,
 ) -> None:
     monkeypatch.setattr(
-        api_module,
+        api_shared,
         "settings",
         replace(
-            api_module.settings,
+            api_shared.settings,
             dify_api_url="https://dify.example",
             dify_router_api_key="router-key",
         ),
@@ -595,7 +596,7 @@ def test_router_success_parses_branch_prefixed_outputs(
             status_code=200,
         )
 
-    monkeypatch.setattr(api_module.dify_gateway, "run_router_workflow", successful_router)
+    monkeypatch.setattr(api_shared.dify_gateway, "run_router_workflow", successful_router)
     response = client.post(
         "/api/v1/assistant/chat",
         headers=login(client),
@@ -615,10 +616,10 @@ def test_stream_endpoint_uses_router_when_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        api_module,
+        api_shared,
         "settings",
         replace(
-            api_module.settings,
+            api_shared.settings,
             dify_api_url="https://dify.example",
             dify_router_api_key="router-key",
         ),
@@ -639,8 +640,8 @@ def test_stream_endpoint_uses_router_when_configured(
     async def must_not_stream(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("configured router path called the local streaming orchestrator")
 
-    monkeypatch.setattr(api_module.dify_gateway, "run_router_workflow", successful_router)
-    monkeypatch.setattr(api_module.orchestrator, "stream", must_not_stream)
+    monkeypatch.setattr(api_shared.dify_gateway, "run_router_workflow", successful_router)
+    monkeypatch.setattr(api_shared.workflow, "stream", must_not_stream)
     response = client.post(
         "/api/v1/assistant/chat/stream",
         headers=login(client),

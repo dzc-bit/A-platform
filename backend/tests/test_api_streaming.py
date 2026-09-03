@@ -10,10 +10,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import api as api_module
+from app.routers import shared as api_shared
 from app.database import Base
 from app.models import Message, User
 from app.schemas import ChatRequest
-from app.services.agent import BusinessAgentOrchestrator
+from app.services.agent import AssistantWorkflow
 from app.services.llm import (
     Completion,
     LLMHistoryMessage,
@@ -78,11 +79,11 @@ class GateStreamingLLM:
         try:
             yield LLMStreamTextDelta("首个模型 Token")
             await self.allow_finish.wait()
-            yield LLMStreamTextDelta(" 已到达客户端，后续内容仍在模型服务中继续生成，完整回答现在结束。")
+            yield LLMStreamTextDelta("：开票申请需要提供订单号、开票抬头、税号、金额与邮箱，请核对材料后提交。")
             self.model_finished.set()
             yield LLMStreamCompleted(
                 Completion(
-                    text="首个模型 Token 已到达客户端，后续内容仍在模型服务中继续生成，完整回答现在结束。",
+                    text="首个模型 Token：开票申请需要提供订单号、开票抬头、税号、金额与邮箱，请核对材料后提交。",
                     used_fallback=False,
                 )
             )
@@ -119,7 +120,7 @@ def test_first_model_token_arrives_before_model_completion_and_database_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake = GateStreamingLLM()
-    monkeypatch.setattr(api_module, "orchestrator", BusinessAgentOrchestrator(llm_client=fake))
+    monkeypatch.setattr(api_shared, "workflow", AssistantWorkflow(llm_client=fake))
 
     async def scenario() -> None:
         response = await api_module.stream_chat(
@@ -135,7 +136,7 @@ def test_first_model_token_arrives_before_model_completion_and_database_commit(
 
         fake.allow_finish.set()
         done = await asyncio.wait_for(_next_named(iterator, "done"), timeout=2)
-        assert done["answer"] == "首个模型 Token 已到达客户端，后续内容仍在模型服务中继续生成，完整回答现在结束。"
+        assert done["answer"] == "首个模型 Token：开票申请需要提供订单号、开票抬头、税号、金额与邮箱，请核对材料后提交。"
         assert fake.model_finished.is_set() is True
         assert _assistant_count(seeded_db) == 1
         await iterator.aclose()
@@ -148,7 +149,7 @@ def test_client_close_cancels_provider_and_rolls_back_unfinished_chat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake = GateStreamingLLM()
-    monkeypatch.setattr(api_module, "orchestrator", BusinessAgentOrchestrator(llm_client=fake))
+    monkeypatch.setattr(api_shared, "workflow", AssistantWorkflow(llm_client=fake))
 
     async def scenario() -> None:
         response = await api_module.stream_chat(
@@ -172,9 +173,9 @@ def test_stream_failure_uses_single_fallback_before_token_or_reset_after_partial
     after_token: bool,
 ) -> None:
     monkeypatch.setattr(
-        api_module,
-        "orchestrator",
-        BusinessAgentOrchestrator(llm_client=FailingStreamingLLM(after_token=after_token)),
+        api_shared,
+        "workflow",
+        AssistantWorkflow(llm_client=FailingStreamingLLM(after_token=after_token)),
     )
 
     async def scenario() -> list[tuple[str, dict[str, object]]]:
