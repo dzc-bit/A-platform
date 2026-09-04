@@ -527,11 +527,15 @@ def _ensure_support_control_allowed(conversation: Conversation, user: User) -> N
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="经营管理者已接管该会话，客服当前仅接收通知")
 
 
-async def _enrich_ticket_suggestion(ticket_id: int, question: str) -> None:
-    """Generate the expensive AI draft after the ticket response is sent."""
+async def _enrich_ticket_suggestion(ticket_id: int, question: str, owner_email: str | None = None) -> None:
+    """Generate the expensive AI draft after the ticket response is sent.
+
+    ``owner_email`` scopes order lookups inside the workflow to the ticket
+    requester; without it those lookups fail closed.
+    """
     try:
         with SessionLocal() as task_db:
-            result = await workflow.run(task_db, question)
+            result = await workflow.run(task_db, question, user_email=owner_email)
             ticket = task_db.get(SupportTicket, ticket_id)
             # Do not overwrite a human action that happened while the model
             # was running.  In particular, a resolved ticket never receives a
@@ -576,9 +580,9 @@ async def _enrich_ticket_suggestion(ticket_id: int, question: str) -> None:
             return
 
 
-def _schedule_ticket_enrichment(ticket_id: int, question: str) -> None:
+def _schedule_ticket_enrichment(ticket_id: int, question: str, owner_email: str | None = None) -> None:
     """Detach enrichment from the request while retaining task references."""
-    task = asyncio.create_task(_enrich_ticket_suggestion(ticket_id, question))
+    task = asyncio.create_task(_enrich_ticket_suggestion(ticket_id, question, owner_email))
     _ticket_tasks.add(task)
 
     def finish(completed: asyncio.Task[None]) -> None:
@@ -850,6 +854,7 @@ async def _run_chat_via_router_or_local(
         payload.message.strip(),
         conversation_id=conversation.id,
         preference_instruction=preference_instruction(preference),
+        user_email=user.email,
     )
 
 

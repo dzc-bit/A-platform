@@ -1,12 +1,45 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
+
+
+@event.listens_for(Engine, "connect")
+def _configure_sqlite_connection(dbapi_connection, connection_record) -> None:
+    """Apply concurrency PRAGMAs to every new SQLite connection.
+
+    SQLite allows a single writer at a time.  WAL journaling lets readers and
+    the writer proceed without blocking each other, and ``busy_timeout`` makes
+    a competing writer wait for the file lock instead of failing immediately
+    with "database is locked".  That is what lets multi-threaded FastAPI
+    workers and detached asyncio background tasks (which use their own
+    ``SessionLocal``) share one database file.  ``foreign_keys`` is per
+    connection and ``synchronous=NORMAL`` keeps WAL commits durable enough
+    without an fsync per commit.
+
+    The listener is registered on the ``Engine`` class so every engine created
+    in the process (app, tests, scripts) gets the same treatment; the type
+    check limits it to the sqlite dialect.
+    """
+    if not isinstance(dbapi_connection, sqlite3.Connection):
+        return
+    cursor = dbapi_connection.cursor()
+    try:
+        # busy_timeout first: even the WAL journal-mode switch then waits for a
+        # held lock instead of raising "database is locked" on startup.
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
 
 
 class Base(DeclarativeBase):

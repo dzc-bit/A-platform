@@ -93,7 +93,7 @@ async def create_ticket(
     # A fresh session prevents use-after-close of the request-scoped session;
     # the detached task lets the 201 response return before model generation.
     if shared.settings.llm_api_key:
-        _schedule_ticket_enrichment(ticket.id, ticket.question)
+        _schedule_ticket_enrichment(ticket.id, ticket.question, current_user.email)
     return ticket
 
 

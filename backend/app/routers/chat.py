@@ -299,6 +299,7 @@ async def stream_chat(
                 payload.message.strip(),
                 conversation_id=conversation.id,
                 preference_instruction=preference_instruction(preference),
+                user_email=current_user.email,
             ):
                 if isinstance(event, AgentStreamTrace):
                     yield f"event: trace\ndata: {json.dumps(event.trace.model_dump(), ensure_ascii=False)}\n\n"

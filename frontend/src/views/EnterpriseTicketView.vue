@@ -47,6 +47,7 @@ watch(
 )
 
 async function createTicket() {
+  if (creating.value) return
   creating.value = true
   error.value = ''
   try {

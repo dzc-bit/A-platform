@@ -2,7 +2,7 @@
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { CheckCheck, Clipboard, LoaderCircle, Volume2 } from 'lucide-vue-next'
 import { difyApi, errorMessage } from '@/api/client'
-import StatusBadge from '@/components/StatusBadge.vue'
+import TraceTimeline from '@/components/TraceTimeline.vue'
 import { useSpeech } from '@/composables/useSpeech'
 import type { Artifact, ChatMessage } from '@/types'
 
@@ -205,12 +205,8 @@ watch(() => props.message.artifacts, loadArtifacts, { immediate: true, deep: tru
         </article>
       </div>
       <details v-if="message.trace?.length" class="trace-details">
-        <summary>查看处理轨迹 <CheckCheck :size="15" /></summary>
-        <div class="trace-list">
-          <div v-for="trace in message.trace" :key="`${trace.step}-${trace.detail}`" class="trace-row">
-            <span>{{ trace.step }}</span><StatusBadge :value="trace.status" type="trace" /><small>{{ trace.detail }}</small>
-          </div>
-        </div>
+        <summary>查看 AI 决策过程（{{ message.trace.length }} 步）<CheckCheck :size="15" /></summary>
+        <TraceTimeline :trace="message.trace" :pending="message.pending" />
       </details>
       <div v-if="message.role === 'assistant' && !message.pending" class="message-tools">
         <button class="icon-button" :class="{ 'icon-button--active': voicePlaying }" :disabled="voiceLoading" :title="voicePlaying ? '停止语音' : '播放真实 TTS 语音'" :aria-label="voicePlaying ? '停止语音' : '播放真实 TTS 语音'" @click="playVoice">

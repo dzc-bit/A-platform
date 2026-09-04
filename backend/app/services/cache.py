@@ -40,6 +40,10 @@ class RetrievalCache:
         self._misses = 0
 
     def _mark_redis_unavailable(self) -> None:
+        # Lock-free by design: these fields may be written from any thread and
+        # can run network I/O that must not happen while holding ``self._lock``.
+        # The GIL keeps the assignments atomic and every write is idempotent;
+        # the worst interleaving recreates the lazy Redis client once.
         self._redis_client = None
         # Keep Redis connection failures off the request hot path, but retry later so
         # a restarted cache server can recover without restarting the API process.
@@ -73,6 +77,7 @@ class RetrievalCache:
             self._misses += 1
 
     def _prune_memory_locked(self, now: float) -> None:
+        """Evict expired then oldest entries. Caller must hold ``self._lock``."""
         expired = [key for key, (expires_at, _) in self._memory.items() if expires_at <= now]
         for key in expired:
             self._memory.pop(key, None)
@@ -131,8 +136,11 @@ class RetrievalCache:
             self._memory.clear()
             redis_keys = tuple(self._redis_keys)
             self._redis_keys.clear()
-        self._hits = 0
-        self._misses = 0
+            # The hit/miss counters are incremented under this lock in get(),
+            # _record_hit() and _record_miss(); resetting them here too keeps a
+            # concurrent clear() from clobbering (losing) a parallel update.
+            self._hits = 0
+            self._misses = 0
         client = self._client()
         if client is not None and redis_keys:
             try:

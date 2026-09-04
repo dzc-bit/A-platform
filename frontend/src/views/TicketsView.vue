@@ -332,7 +332,7 @@ function closeConversation(conversationId: number) {
 
 async function updateTicket(status?: string) {
   const current = selectedTicket.value
-  if (!current) return
+  if (!current || saving.value) return
   saving.value = true
   error.value = ''
   try {
@@ -351,6 +351,7 @@ function handleStatusChange(event: Event) {
 }
 
 async function createTicket() {
+  if (creating.value) return
   creating.value = true
   createError.value = ''
   try {
@@ -473,7 +474,7 @@ onBeforeUnmount(() => {
         />
         <header class="ticket-detail-header">
           <div><p class="eyebrow">工单 #{{ selectedTicket.id }}</p><h2>{{ selectedTicket.customer_name }}</h2><div class="ticket-meta"><StatusBadge :value="selectedTicket.status" /><span>{{ selectedTicket.category }}</span><span>创建于 {{ new Date(selectedTicket.created_at).toLocaleString('zh-CN') }}</span></div></div>
-          <select :value="selectedTicket.status" class="status-select" aria-label="更新工单状态" @change="handleStatusChange"><option value="open">待处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option></select>
+          <select :value="selectedTicket.status" class="status-select" aria-label="更新工单状态" :disabled="saving" @change="handleStatusChange"><option value="open">待处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option></select>
         </header>
 
         <section class="customer-question"><p class="section-label">客户问题</p><p>{{ selectedTicket.question }}</p></section>

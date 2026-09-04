@@ -7,7 +7,16 @@ from typing import Any
 
 
 class TicketEventBroker:
-    """Single-process fan-out for support updates; Redis Pub/Sub is the scale-out seam."""
+    """Single-process fan-out for support updates; Redis Pub/Sub is the scale-out seam.
+
+    Threading model: every mutation below happens on the asyncio event loop
+    thread with no ``await`` between state changes, so subscribe/unsubscribe/
+    publish cannot interleave mid-mutation.  ``publish`` iterates a snapshot
+    copy of the subscriber set, so a concurrent (un)subscribe never mutates the
+    collection being iterated.  The ``asyncio.Queue`` objects themselves are
+    therefore never touched from a foreign thread; cross-process fan-out is
+    delegated to Redis instead of sharing these queues.
+    """
 
     def __init__(self, queue_size: int = 64) -> None:
         self._queue_size = queue_size
@@ -24,8 +33,11 @@ class TicketEventBroker:
         predicate: Callable[[dict[str, Any]], bool] | None = None,
     ) -> AsyncIterator[asyncio.Queue[dict[str, Any]]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._queue_size)
-        self._subscribers.add(queue)
+        # Register the authorization predicate BEFORE the queue becomes visible
+        # to publish(): a subscriber present in ``_subscribers`` without its
+        # predicate would fail open and receive events meant to be filtered.
         self._predicates[queue] = predicate
+        self._subscribers.add(queue)
         try:
             yield queue
         finally:
@@ -33,6 +45,8 @@ class TicketEventBroker:
             self._predicates.pop(queue, None)
 
     async def publish(self, event: dict[str, Any]) -> None:
+        # ``tuple(...)`` takes an atomic snapshot, so subscribers added or
+        # removed while this loop runs are simply not part of this broadcast.
         self._sequence += 1
         payload = {"sequence": self._sequence, **event}
         for queue in tuple(self._subscribers):
