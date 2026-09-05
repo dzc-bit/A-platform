@@ -1,0 +1,14 @@
+[
+  {"question": "昨晚十点后平台多次崩溃，客户服务响应也很慢，请马上跟进。", "expected_category": "系统故障", "expected_document": "商务服务响应与升级规范", "requires_manual_handoff": true},
+  {"question": "客户要求调整违约责任条款，这类修订是否需要法务介入审核？", "expected_category": "合同咨询", "expected_document": "合同与发票办理指引", "requires_manual_handoff": true},
+  {"question": "我们公司的抬头变更了，之前的开票信息还能继续使用吗？", "expected_category": "发票办理", "expected_document": "合同与发票办理指引", "requires_manual_handoff": true},
+  {"question": "帮我看看当前履约中的项目有哪些已经到了验收节点。", "expected_category": "订单查询", "expected_document": "企业账户与订单查询说明", "requires_manual_handoff": true},
+  {"question": "员工反馈新邮箱没有收到激活邮件，导致无法登录后台。", "expected_category": "账户访问", "expected_document": "企业账户与订单查询说明", "requires_manual_handoff": true},
+  {"question": "财务对上月账单里一笔重复扣款有疑问，需要核实退款路径。", "expected_category": "付款咨询", "requires_manual_handoff": true},
+  {"question": "生产环境数据库崩溃，客户资料暂时读不出来，请立即升级处理。", "expected_category": "系统故障", "expected_document": "商务服务响应与升级规范", "requires_manual_handoff": true},
+  {"question": "客户想了解交付里程碑的进度安排，从哪里能看到最新状态？", "expected_category": "订单查询", "expected_document": "企业账户与订单查询说明", "requires_manual_handoff": true},
+  {"question": "标准合同的审批流程要准备哪些材料，初审需要几天？", "expected_category": "合同咨询", "expected_document": "合同与发票办理指引", "requires_manual_handoff": true},
+  {"question": "增值税专用发票一般多长时间能开出来？整个流程要走哪些环节？", "expected_category": "发票办理", "expected_document": "合同与发票办理指引", "requires_manual_handoff": true},
+  {"question": "管理员的账号被锁定了，重置密码的时候需要注意什么？", "expected_category": "账户访问", "expected_document": "企业账户与订单查询说明", "requires_manual_handoff": true},
+  {"question": "你们平台主要服务哪些行业的客户？顺便介绍一下公司背景。", "expected_category": "一般咨询", "requires_manual_handoff": true}
+]
