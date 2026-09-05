@@ -16,6 +16,16 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    env:
+      PYTHON_DOTENV_DISABLED: "1"
+      DATABASE_URL: "sqlite:///./ci_backend.db"
+      TOKEN_SECRET: "ci-only-secret-token"
+      DEMO_PASSWORD: "ci-demo-password"
+      LLM_API_KEY: ""
+      EMBEDDING_API_KEY: ""
+      DIFY_API_URL: ""
+      DIFY_API_KEY: ""
+      REDIS_URL: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,16 +35,24 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Lint (ruff)
+        run: ruff check app tests scripts migrations
       - name: Compile application
         run: python -m compileall -q app
+      - name: Verify Alembic migrations round-trip
+        run: |
+          alembic upgrade head
+          alembic downgrade -1
+          alembic upgrade head
+          rm -f ci_backend.db
       - name: Evaluate deterministic Agent and RAG metrics
         run: python scripts/evaluate_agent.py
       - name: Run backend tests when present
         if: ${{ hashFiles('backend/tests/**/*.py') != '' }}
-        run: pytest -q
+        run: pytest -q --cov=app --cov-report=term-missing
 
   frontend:
-    name: Frontend build
+    name: Frontend build and tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,6 +64,8 @@ jobs:
           node-version: "22"
       - name: Install dependencies
         run: corepack enable && pnpm install --frozen-lockfile
+      - name: Unit tests (Vitest)
+        run: pnpm test
       - name: Type-check and build
         run: pnpm run build
 
