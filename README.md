@@ -96,7 +96,7 @@ sequenceDiagram
     API-->>UI: ChatResponse（并写入会话历史）
 ```
 
-LangGraph 内部的确定性骨架为：`task_planner` → `query_rewriter` → `intent_router` → `knowledge_retrieval` → `route_dispatch` →（complex 时）`tool_agent` → `prompt_composer` → `groundedness_plan_gate` → `finish`。远程模型调用不进入同步图：超时的模型无法打断检索、工具白名单校验和提示词组装；LLM 决策（改写与路由）在图外完成后作为状态传入，离线时图内关键词规则接管。
+LangGraph 内部的确定性骨架为：`task_planner` → `query_rewriter` → `intent_router` → `knowledge_retrieval` → `route_dispatch` →（complex 时）`deterministic_tool_driver` → `prompt_composer` → `groundedness_plan_gate` → `finish`。远程模型调用不进入同步图：超时的模型无法打断检索、工具白名单校验和提示词组装；LLM 决策（改写与路由）在图外完成后作为状态传入，离线时图内关键词规则接管。
 
 最终回答缓存命中时会直接返回缓存并跳过 Dify Router 与本地工作流。Router 启用时，前端仍调用 SSE 接口，但后端会等待 Dify blocking 工作流完成再发送 `trace`、`reset` 和 `done`；只有本地工作流路径支持模型 Token 的逐段流式输出。
 

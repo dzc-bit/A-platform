@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import AsyncIterator, Sequence
@@ -149,6 +150,37 @@ class AgentStreamReset:
 @dataclass(frozen=True)
 class AgentStreamCompleted:
     result: AgentResult
+
+
+@dataclass
+class _StreamPhaseState:
+    """Mutable state for one streamed provider phase of the chat pipeline."""
+
+    text_parts: list[str] = dataclass_field(default_factory=list)
+    completion: Completion | None = None
+    first_phase: Literal["text", "tool"] | None = None
+    mixed: bool = False
+
+    @property
+    def streamed_answer(self) -> str:
+        return "".join(self.text_parts)
+
+
+@dataclass
+class _ChatStreamState:
+    """Per-request mutable state threaded through the extracted chat phases."""
+
+    trace: list[AgentTrace] = dataclass_field(default_factory=list)
+    answer: str = ""
+    generation_fallback: bool = False
+    completion_reason: str | None = None
+    quality_status: str = "completed"
+    quality_detail: str = ""
+    quality_score: float = 0.0
+
+    @property
+    def used_fallback(self) -> bool:
+        return self.generation_fallback or self.quality_status == "fallback"
 
 
 class AgentWorkflowState(TypedDict, total=False):
@@ -1019,9 +1051,9 @@ class AssistantWorkflow:
 
         def route_after_dispatch(state: AgentWorkflowState) -> str:
             route_value = state.get("route", "knowledge")
-            return "tool_agent" if route_value == "complex" else "prompt_composer"
+            return "deterministic_tool_driver" if route_value == "complex" else "prompt_composer"
 
-        def tool_agent_node(state: AgentWorkflowState) -> AgentWorkflowState:
+        def deterministic_tool_driver_node(state: AgentWorkflowState) -> AgentWorkflowState:
             """Deterministic driver: category -> whitelisted tool.
 
             Runs only when the LLM tool loop is unavailable; with a live model
@@ -1088,7 +1120,7 @@ class AssistantWorkflow:
         workflow.add_node("intent_router", intent_router_node)
         workflow.add_node("knowledge_retrieval", retrieval_node)
         workflow.add_node("route_dispatch", route_dispatch_node)
-        workflow.add_node("tool_agent", tool_agent_node)
+        workflow.add_node("deterministic_tool_driver", deterministic_tool_driver_node)
         workflow.add_node("prompt_composer", prompt_composer_node)
         workflow.add_node("groundedness_plan_gate", plan_quality_node)
         workflow.add_node("finish", finish_node)
@@ -1100,9 +1132,12 @@ class AssistantWorkflow:
         workflow.add_conditional_edges(
             "route_dispatch",
             route_after_dispatch,
-            {"tool_agent": "tool_agent", "prompt_composer": "prompt_composer"},
+            {
+                "deterministic_tool_driver": "deterministic_tool_driver",
+                "prompt_composer": "prompt_composer",
+            },
         )
-        workflow.add_edge("tool_agent", "prompt_composer")
+        workflow.add_edge("deterministic_tool_driver", "prompt_composer")
         workflow.add_edge("prompt_composer", "groundedness_plan_gate")
         workflow.add_conditional_edges(
             "groundedness_plan_gate",
@@ -1394,14 +1429,14 @@ class AssistantWorkflow:
             runtime_settings.conversation_memory_messages,
             question,
         )
-        trace: list[AgentTrace] = []
+        state = _ChatStreamState()
 
         # 1. Rewrite + route (LLM #1 and #2, or deterministic fallback).
         rewritten, category, route, intent_traces = await self._resolve_intent(
             question, history, runtime_settings
         )
         for item in intent_traces:
-            trace.append(item)
+            state.trace.append(item)
             yield AgentStreamTrace(item)
 
         # 2. Media route short-circuits before retrieval/generation.
@@ -1414,19 +1449,20 @@ class AssistantWorkflow:
                 user_id=user_id,
             )
             for item in result.trace:
-                trace.append(item)
+                state.trace.append(item)
                 yield AgentStreamTrace(item)
             yield AgentStreamReset(result.answer)
-            result = AgentResult(
-                answer=result.answer,
-                citations=result.citations,
-                trace=trace,
-                used_fallback=result.used_fallback,
-                category=result.category,
-                artifacts=result.artifacts,
-                quality_score=0.0,
+            yield AgentStreamCompleted(
+                AgentResult(
+                    answer=result.answer,
+                    citations=result.citations,
+                    trace=state.trace,
+                    used_fallback=result.used_fallback,
+                    category=result.category,
+                    artifacts=result.artifacts,
+                    quality_score=0.0,
+                )
             )
-            yield AgentStreamCompleted(result)
             return
 
         # 3. Deterministic skeleton: retrieval (+ offline tool driver for complex).
@@ -1435,7 +1471,11 @@ class AssistantWorkflow:
         graph_note = "本地状态编排"
         try:
             if LANGGRAPH_AVAILABLE:
-                graph_state = self._run_langgraph(
+                # The synchronous graph does retrieval/tool work on the shared
+                # SQLite session; run it in a worker thread so the event loop
+                # stays responsive (check_same_thread=False makes this safe).
+                graph_state = await asyncio.to_thread(
+                    self._run_langgraph,
                     db,
                     question,
                     rewritten,
@@ -1483,7 +1523,7 @@ class AssistantWorkflow:
                 f"top_k={effective_top_k}，缓存 {runtime_settings.retrieval_cache_ttl_seconds} 秒；{graph_note}"
             ),
         )
-        trace.append(retrieval_trace)
+        state.trace.append(retrieval_trace)
         yield AgentStreamTrace(retrieval_trace)
 
         if response_plan is None:
@@ -1497,204 +1537,304 @@ class AssistantWorkflow:
         system_prompt = response_plan["system_prompt"]
         user_prompt = response_plan["user_prompt"]
 
-        # 4. Tool agent loop (LLM #3) for complex route.
-        tool_route_fallback = False
-        tool_calls_made: list[str] = []
-        last_tool_text: str | None = tool_result
+        # 4/5. Route-specific generation: bounded LLM tool loop or single completion.
         if route == "complex":
-            tool_results: list[LLMToolResult] = []
-            streamed_answer_parts: list[str] = []
-            completion: Completion | None = None
-            first_phase: Literal["text", "tool"] | None = None
-            mixed_provider_output = False
-            rounds = 0
-            async for event in self._stream_complete(
-                system_prompt,
-                user_prompt,
+            async for event in self._stream_tool_route(
+                db,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 history=history,
-                tools=self.tool_agent.definitions,
-                model=runtime_settings.llm_model,
+                runtime_settings=runtime_settings,
+                category=category,
+                hits=hits,
+                initial_tool_result=tool_result,
+                conversation_id=conversation_id,
+                user_email=user_email,
+                state=state,
             ):
-                if isinstance(event, LLMStreamTextDelta):
-                    if first_phase in {None, "text"}:
-                        first_phase = "text"
-                        streamed_answer_parts.append(event.text)
-                        yield AgentStreamToken(event.text, "model")
-                    else:
-                        mixed_provider_output = True
-                elif isinstance(event, LLMStreamToolCallDelta):
-                    if first_phase is None:
-                        first_phase = "tool"
-                    elif first_phase == "text":
-                        mixed_provider_output = True
-                elif isinstance(event, LLMStreamCompleted):
-                    completion = event.completion
-            if completion is None:
-                completion = Completion(text=None, used_fallback=True, reason="模型流未返回完成事件")
-
-            while (
-                rounds < self.tool_agent.MAX_ROUNDS
-                and not mixed_provider_output
-                and not completion.used_fallback
-                and not completion.text
-                and completion.tool_calls
-            ):
-                call = completion.tool_calls[0]
-                accepted, result_text = self.tool_agent.validate_and_execute(
-                    db, call, conversation_id=conversation_id, owner_email=user_email
-                )
-                tool_results.append(LLMToolResult(call=call, content=result_text))
-                if accepted:
-                    last_tool_text = result_text
-                tool_calls_made.append(f"{call.name}({'执行成功' if accepted else '参数被拒绝'})")
-                for extra in completion.tool_calls[1:]:
-                    # One tool execution per round: additional parallel calls are
-                    # explicitly rejected so the model sees why nothing happened.
-                    tool_results.append(
-                        LLMToolResult(
-                            call=extra,
-                            content="每轮只处理一个工具调用，该调用未被处理。",
-                        )
-                    )
-                    tool_calls_made.append(f"{extra.name}(超出单轮限额被忽略)")
-                rounds += 1
-                next_text_parts: list[str] = []
-                next_first_phase: Literal["text", "tool"] | None = None
-                next_mixed = False
-                next_completion: Completion | None = None
-                async for event in self._stream_complete(
-                    system_prompt,
-                    user_prompt,
-                    history=history,
-                    tools=self.tool_agent.definitions,
-                    tool_results=tuple(tool_results),
-                    model=runtime_settings.llm_model,
-                ):
-                    if isinstance(event, LLMStreamTextDelta):
-                        if next_first_phase in {None, "text"}:
-                            next_first_phase = "text"
-                            next_text_parts.append(event.text)
-                            yield AgentStreamToken(event.text, "model")
-                        else:
-                            next_mixed = True
-                    elif isinstance(event, LLMStreamToolCallDelta):
-                        if next_first_phase is None:
-                            next_first_phase = "tool"
-                        elif next_first_phase == "text":
-                            next_mixed = True
-                    elif isinstance(event, LLMStreamCompleted):
-                        next_completion = event.completion
-                if next_completion is None:
-                    next_completion = Completion(
-                        text=None, used_fallback=True, reason="工具结果后的模型流未返回完成事件"
-                    )
-                streamed_answer_parts = next_text_parts
-                first_phase = next_first_phase
-                mixed_provider_output = next_mixed
-                completion = next_completion
-                if completion.text or completion.used_fallback:
-                    break
-
-            if rounds >= self.tool_agent.MAX_ROUNDS and completion.tool_calls and not completion.text:
-                # Bounded loop exhausted on tool calls: one final synthesis call
-                # with the full tool conversation, tools removed.
-                final_parts: list[str] = []
-                final_completion: Completion | None = None
-                async for event in self._stream_complete(
-                    system_prompt,
-                    user_prompt,
-                    history=history,
-                    tool_results=tuple(tool_results),
-                    model=runtime_settings.llm_model,
-                ):
-                    if isinstance(event, LLMStreamTextDelta):
-                        final_parts.append(event.text)
-                        yield AgentStreamToken(event.text, "model")
-                    elif isinstance(event, LLMStreamToolCallDelta):
-                        tool_route_fallback = True
-                    elif isinstance(event, LLMStreamCompleted):
-                        final_completion = event.completion
-                if final_completion is not None and not final_completion.used_fallback:
-                    completion = final_completion
-                    streamed_answer_parts = final_parts
-                elif final_completion is not None:
-                    completion = final_completion
-
-            streamed_answer = "".join(streamed_answer_parts)
-            if mixed_provider_output or completion.used_fallback or not (streamed_answer or completion.text):
-                tool_route_fallback = True
-
-            if tool_route_fallback:
-                answer = self._fallback_reply(category, hits, last_tool_text)
-                if streamed_answer:
-                    yield AgentStreamReset(answer)
-                else:
-                    yield AgentStreamToken(answer, "fallback")
-            else:
-                answer = streamed_answer or completion.text or ""
-                if not streamed_answer and answer:
-                    yield AgentStreamReset(answer)
-
-            if tool_calls_made:
-                tool_status = "fallback" if tool_route_fallback else "completed"
-                tool_detail = "工具循环：" + "；".join(tool_calls_made)
-                if last_tool_text:
-                    tool_detail = f"{tool_detail}；{last_tool_text}"
-            elif last_tool_text:
-                tool_status = "completed"
-                tool_detail = f"确定性驱动执行工具结果：{last_tool_text}"
-            else:
-                tool_status = "skipped"
-                tool_detail = "模型未发起工具调用，直接给出回答"
-            tool_trace = AgentTrace(step="工具调用", status=tool_status, detail=tool_detail)
-            trace.append(tool_trace)
-            yield AgentStreamTrace(tool_trace)
+                yield event
         else:
-            # 5. Knowledge route: single streamed completion.
-            streamed_answer_parts = []
-            completion = None
-            async for event in self._stream_complete(
-                system_prompt,
-                user_prompt,
+            async for event in self._stream_knowledge_route(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 history=history,
-                model=runtime_settings.llm_model,
+                runtime_settings=runtime_settings,
+                category=category,
+                hits=hits,
+                state=state,
             ):
-                if isinstance(event, LLMStreamTextDelta):
-                    streamed_answer_parts.append(event.text)
-                    yield AgentStreamToken(event.text, "model")
-                elif isinstance(event, LLMStreamCompleted):
-                    completion = event.completion
-            if completion is None:
-                completion = Completion(text=None, used_fallback=True, reason="模型流未返回完成事件")
-            streamed_answer = "".join(streamed_answer_parts)
-            needs_fallback_reply = completion.used_fallback or not (streamed_answer or completion.text)
-            if needs_fallback_reply:
-                answer = self._fallback_reply(category, hits, None)
-                if streamed_answer:
-                    yield AgentStreamReset(answer)
-                else:
-                    yield AgentStreamToken(answer, "fallback")
-            else:
-                answer = streamed_answer or completion.text or ""
-                if not streamed_answer and answer:
-                    yield AgentStreamReset(answer)
-
-        generation_fallback = tool_route_fallback if route == "complex" else completion.used_fallback or not answer
+                yield event
 
         # 6. Answer generation trace + groundedness gate (LLM #4 was the final answer).
         response_trace = AgentTrace(
             step="回答生成",
-            status="fallback" if generation_fallback else "completed",
-            detail=completion.reason or (
-                "已按本地安全规则生成回退回复" if generation_fallback else "已通过模型生成基于知识的回复"
+            status="fallback" if state.generation_fallback else "completed",
+            detail=state.completion_reason or (
+                "已按本地安全规则生成回退回复" if state.generation_fallback else "已通过模型生成基于知识的回复"
             ),
         )
-        trace.append(response_trace)
+        state.trace.append(response_trace)
         yield AgentStreamTrace(response_trace)
 
+        async for event in self._apply_quality_gate(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            history=history,
+            runtime_settings=runtime_settings,
+            hits=hits,
+            state=state,
+        ):
+            yield event
+
+        yield AgentStreamCompleted(
+            AgentResult(
+                answer=state.answer,
+                citations=[
+                    Citation(document_id=hit.document_id, title=hit.title, excerpt=hit.excerpt, score=hit.score)
+                    for hit in hits
+                ],
+                trace=state.trace,
+                used_fallback=state.used_fallback,
+                category=category,
+                quality_score=state.quality_score,
+            )
+        )
+
+    async def _stream_phase(
+        self,
+        phase: _StreamPhaseState,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        history: Sequence[LLMHistoryMessage],
+        model: str | None,
+        tools: Sequence[LLMToolDefinition] = (),
+        tool_results: Sequence[LLMToolResult] = (),
+        default_reason: str = "模型流未返回完成事件",
+    ) -> AsyncIterator[AgentStreamToken]:
+        """Drive one provider stream: forward tokens and record phase state.
+
+        The text/tool interleaving rules live here so every phase of the chat
+        pipeline shares one implementation and cannot drift.
+        """
+        async for event in self._stream_complete(
+            system_prompt,
+            user_prompt,
+            history=history,
+            tools=tools,
+            tool_results=tool_results,
+            model=model,
+        ):
+            if isinstance(event, LLMStreamTextDelta):
+                if phase.first_phase in {None, "text"}:
+                    phase.first_phase = "text"
+                    phase.text_parts.append(event.text)
+                    yield AgentStreamToken(event.text, "model")
+                else:
+                    phase.mixed = True
+            elif isinstance(event, LLMStreamToolCallDelta):
+                if phase.first_phase is None:
+                    phase.first_phase = "tool"
+                elif phase.first_phase == "text":
+                    phase.mixed = True
+            elif isinstance(event, LLMStreamCompleted):
+                phase.completion = event.completion
+        if phase.completion is None:
+            phase.completion = Completion(text=None, used_fallback=True, reason=default_reason)
+
+    async def _emit_answer_or_fallback(
+        self,
+        *,
+        phase: _StreamPhaseState,
+        category: str,
+        hits: list[RetrievalHit],
+        last_tool_text: str | None,
+        state: _ChatStreamState,
+    ) -> AsyncIterator[AgentStreamToken | AgentStreamReset]:
+        """Emit the provider answer, or the local fallback reply when unusable.
+
+        Updates ``state.answer``/``generation_fallback``/``completion_reason``
+        for the shared generation trace downstream.
+        """
+        completion = phase.completion or Completion(text=None, used_fallback=True, reason="模型流未返回完成事件")
+        streamed_answer = phase.streamed_answer
+        if phase.mixed or completion.used_fallback or not (streamed_answer or completion.text):
+            state.generation_fallback = True
+            state.completion_reason = completion.reason
+            answer = self._fallback_reply(category, hits, last_tool_text)
+            state.answer = answer
+            if streamed_answer:
+                yield AgentStreamReset(answer)
+            else:
+                yield AgentStreamToken(answer, "fallback")
+        else:
+            state.answer = streamed_answer or completion.text or ""
+            state.completion_reason = completion.reason
+            if not streamed_answer and state.answer:
+                yield AgentStreamReset(state.answer)
+
+    async def _stream_tool_route(
+        self,
+        db: Session,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        history: Sequence[LLMHistoryMessage],
+        runtime_settings: RuntimeSettings,
+        category: str,
+        hits: list[RetrievalHit],
+        initial_tool_result: str | None,
+        conversation_id: int | None,
+        user_email: str | None,
+        state: _ChatStreamState,
+    ) -> AsyncIterator[AgentStreamToken | AgentStreamReset | AgentStreamTrace]:
+        """Complex route: bounded LLM tool loop with a final synthesis and fallback.
+
+        Yields token/reset/trace events and mutates ``state`` with the answer
+        and fallback flag for the shared generation trace.
+        """
+        tool_results: list[LLMToolResult] = []
+        tool_calls_made: list[str] = []
+        last_tool_text: str | None = initial_tool_result
+        rounds = 0
+
+        phase = _StreamPhaseState()
+        async for token in self._stream_phase(
+            phase,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            history=history,
+            tools=self.tool_agent.definitions,
+            model=runtime_settings.llm_model,
+        ):
+            yield token
+
+        while (
+            rounds < self.tool_agent.MAX_ROUNDS
+            and not phase.mixed
+            and not phase.completion.used_fallback
+            and not phase.completion.text
+            and phase.completion.tool_calls
+        ):
+            call = phase.completion.tool_calls[0]
+            accepted, result_text = self.tool_agent.validate_and_execute(
+                db, call, conversation_id=conversation_id, owner_email=user_email
+            )
+            tool_results.append(LLMToolResult(call=call, content=result_text))
+            if accepted:
+                last_tool_text = result_text
+            tool_calls_made.append(f"{call.name}({'执行成功' if accepted else '参数被拒绝'})")
+            for extra in phase.completion.tool_calls[1:]:
+                # One tool execution per round: additional parallel calls are
+                # explicitly rejected so the model sees why nothing happened.
+                tool_results.append(
+                    LLMToolResult(
+                        call=extra,
+                        content="每轮只处理一个工具调用，该调用未被处理。",
+                    )
+                )
+                tool_calls_made.append(f"{extra.name}(超出单轮限额被忽略)")
+            rounds += 1
+            phase = _StreamPhaseState()
+            async for token in self._stream_phase(
+                phase,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                history=history,
+                tools=self.tool_agent.definitions,
+                tool_results=tuple(tool_results),
+                model=runtime_settings.llm_model,
+                default_reason="工具结果后的模型流未返回完成事件",
+            ):
+                yield token
+            if phase.completion.text or phase.completion.used_fallback:
+                break
+
+        if rounds >= self.tool_agent.MAX_ROUNDS and phase.completion.tool_calls and not phase.completion.text:
+            # Bounded loop exhausted on tool calls: one final synthesis call
+            # with the full tool conversation, tools removed.
+            synthesis = _StreamPhaseState()
+            async for token in self._stream_phase(
+                synthesis,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                history=history,
+                tool_results=tuple(tool_results),
+                model=runtime_settings.llm_model,
+            ):
+                yield token
+            if synthesis.completion.used_fallback:
+                synthesis.text_parts = phase.text_parts
+            phase = synthesis
+
+        async for event in self._emit_answer_or_fallback(
+            phase=phase,
+            category=category,
+            hits=hits,
+            last_tool_text=last_tool_text,
+            state=state,
+        ):
+            yield event
+
+        if tool_calls_made:
+            tool_status = "fallback" if state.generation_fallback else "completed"
+            tool_detail = "工具循环：" + "；".join(tool_calls_made)
+            if last_tool_text:
+                tool_detail = f"{tool_detail}；{last_tool_text}"
+        elif last_tool_text:
+            tool_status = "completed"
+            tool_detail = f"确定性驱动执行工具结果：{last_tool_text}"
+        else:
+            tool_status = "skipped"
+            tool_detail = "模型未发起工具调用，直接给出回答"
+        tool_trace = AgentTrace(step="工具调用", status=tool_status, detail=tool_detail)
+        state.trace.append(tool_trace)
+        yield AgentStreamTrace(tool_trace)
+
+    async def _stream_knowledge_route(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        history: Sequence[LLMHistoryMessage],
+        runtime_settings: RuntimeSettings,
+        category: str,
+        hits: list[RetrievalHit],
+        state: _ChatStreamState,
+    ) -> AsyncIterator[AgentStreamToken | AgentStreamReset]:
+        """Knowledge route: one streamed completion with a local fallback reply."""
+        phase = _StreamPhaseState()
+        async for token in self._stream_phase(
+            phase,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            history=history,
+            model=runtime_settings.llm_model,
+        ):
+            yield token
+        async for event in self._emit_answer_or_fallback(
+            phase=phase,
+            category=category,
+            hits=hits,
+            last_tool_text=None,
+            state=state,
+        ):
+            yield event
+
+    async def _apply_quality_gate(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        history: Sequence[LLMHistoryMessage],
+        runtime_settings: RuntimeSettings,
+        hits: list[RetrievalHit],
+        state: _ChatStreamState,
+    ) -> AsyncIterator[AgentStreamReset | AgentStreamTrace]:
+        """Groundedness gate with one bounded retry; resets when the answer changes."""
         gate = GroundednessGate(runtime_settings.answer_groundedness_threshold)
-        quality_status, quality_detail, quality_score = gate.check(answer, hits)
-        if quality_status == "fallback" and not generation_fallback:
+        state.quality_status, state.quality_detail, state.quality_score = gate.check(state.answer, hits)
+        if state.quality_status == "fallback" and not state.generation_fallback:
             # One bounded retry with stricter grounding instructions.
             try:
                 retry_completion = await self._complete(
@@ -1711,34 +1851,19 @@ class AssistantWorkflow:
             if retry_completion.text and not retry_completion.used_fallback:
                 retry_status, retry_detail, retry_score = gate.check(retry_completion.text, hits)
                 if retry_status == "completed":
-                    answer = retry_completion.text
-                    quality_status, quality_detail, quality_score = retry_status, retry_detail, retry_score
-                    yield AgentStreamReset(answer)
-            if quality_status == "fallback":
-                if "建议" not in answer:
-                    answer = f"{answer}\n\n建议：请转人工服务人员核验后继续处理。"
-                    yield AgentStreamReset(answer)
-        elif quality_status == "fallback":
-            if "建议" not in answer:
-                answer = f"{answer}\n\n建议：请转人工服务人员核验后继续处理。"
-                yield AgentStreamReset(answer)
-        quality_trace = AgentTrace(step="回答质检", status=quality_status, detail=quality_detail)
-        trace.append(quality_trace)
+                    state.answer = retry_completion.text
+                    state.quality_status, state.quality_detail, state.quality_score = (
+                        retry_status,
+                        retry_detail,
+                        retry_score,
+                    )
+                    yield AgentStreamReset(state.answer)
+        if state.quality_status == "fallback" and "建议" not in state.answer:
+            state.answer = f"{state.answer}\n\n建议：请转人工服务人员核验后继续处理。"
+            yield AgentStreamReset(state.answer)
+        quality_trace = AgentTrace(step="回答质检", status=state.quality_status, detail=state.quality_detail)
+        state.trace.append(quality_trace)
         yield AgentStreamTrace(quality_trace)
-
-        yield AgentStreamCompleted(
-            AgentResult(
-                answer=answer,
-                citations=[
-                    Citation(document_id=hit.document_id, title=hit.title, excerpt=hit.excerpt, score=hit.score)
-                    for hit in hits
-                ],
-                trace=trace,
-                used_fallback=generation_fallback or quality_status == "fallback",
-                category=category,
-                quality_score=quality_score,
-            )
-        )
 
     async def run(
         self,
