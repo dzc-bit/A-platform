@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import weakref
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
@@ -88,6 +90,100 @@ _TOOL_CALL_ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 _TOOL_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,63}")
 _MAX_TOOL_ARGUMENTS_LENGTH = 4_096
 _MAX_STREAM_TOOL_CALLS = 16
+
+# Shared provider connection pool ---------------------------------------------
+# One httpx.AsyncClient per asyncio event loop, created lazily and reused for
+# every provider call on that loop so TCP/TLS handshakes are amortized and the
+# number of concurrent sockets stays bounded. Weak keys let a cached entry be
+# dropped once its loop is garbage collected (tests create many short-lived
+# loops via asyncio.run).
+_SHARED_CLIENT_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+_shared_clients: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _get_shared_client() -> httpx.AsyncClient:
+    """Return the shared AsyncClient for the running loop, creating it lazily.
+
+    Creation is fully synchronous (no await between lookup and store), so two
+    coroutines on the same loop can never race into building two clients. The
+    ``is_closed`` re-check keeps the pool usable after an external shutdown.
+    """
+    loop = asyncio.get_running_loop()
+    client = _shared_clients.get(loop)
+    if client is None or getattr(client, "is_closed", False):
+        client = httpx.AsyncClient(limits=_SHARED_CLIENT_LIMITS)
+        _shared_clients[loop] = client
+    return client
+
+
+async def aclose_shared_clients() -> None:
+    """Close every pooled AsyncClient and empty the pool; safe to repeat.
+
+    Intended for application shutdown (FastAPI lifespan) and tests. Closing a
+    stale client must never break the caller, so failures are swallowed.
+    """
+    for loop, client in list(_shared_clients.items()):
+        try:
+            await client.aclose()
+        except Exception:  # noqa: BLE001 - shutdown must never raise from a stale client
+            pass
+        _shared_clients.pop(loop, None)
+
+
+# Bounded retry policy for transient provider failures (timeouts, transport
+# errors, HTTP 429/5xx). Permanent failures (other 4xx, malformed payloads)
+# surface immediately through the existing fallback path. Streaming calls only
+# retry before the first provider byte; afterwards recovery is owned by the
+# downstream reset mechanism instead of a replay here.
+_LLM_MAX_RETRIES = 2
+_LLM_RETRY_BACKOFFS = (0.5, 1.0)
+
+
+def _is_transient_status(status_code: int) -> bool:
+    return status_code == 429 or status_code >= 500
+
+
+def _retry_backoff(retries: int) -> float:
+    """Delay before the next attempt; ``retries`` is the 1-based retry number."""
+    return _LLM_RETRY_BACKOFFS[min(retries, len(_LLM_RETRY_BACKOFFS)) - 1]
+
+
+async def _post_with_retries(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, object],
+    timeout: float,
+) -> tuple[httpx.Response, int]:
+    """POST with bounded retries for transient failures (timeouts, 429/5xx).
+
+    Returns the response and the number of retries consumed so callers can
+    report them. Exhausted transient failures re-raise the original error
+    (status failures via ``raise_for_status``) with a ``retries`` attribute so
+    the caller can still report the count; other 4xx raise immediately.
+    """
+    retries = 0
+    while True:
+        try:
+            response = await client.post(endpoint, headers=headers, json=payload, timeout=timeout)
+        except (httpx.TimeoutException, httpx.TransportError) as error:
+            if retries >= _LLM_MAX_RETRIES:
+                error.retries = retries  # type: ignore[attr-defined]
+                raise
+        else:
+            if not _is_transient_status(response.status_code):
+                return response, retries
+            if retries >= _LLM_MAX_RETRIES:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as error:
+                    error.retries = retries  # type: ignore[attr-defined]
+                    raise
+        retries += 1
+        await asyncio.sleep(_retry_backoff(retries))
 
 
 @dataclass
@@ -286,6 +382,7 @@ class OpenAICompatibleClient:
         if not settings.llm_api_key:
             return Completion(text=None, used_fallback=True, reason="未配置 LLM_API_KEY")
         endpoint = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
+        retries = 0
         try:
             payload = self._request_payload(
                 system_prompt,
@@ -297,38 +394,42 @@ class OpenAICompatibleClient:
                 stream=False,
                 temperature=temperature,
             )
-            async with httpx.AsyncClient(timeout=timeout or 20) as client:
-                response = await client.post(
-                    endpoint,
-                    headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-                    json=payload,
-                )
-                response.raise_for_status()
-                response_payload = response.json()
-                if not isinstance(response_payload, Mapping):
-                    raise ValueError("provider response must be an object")
-                choices = response_payload.get("choices")
-                if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
-                    raise ValueError("provider response did not include a choice")
-                message = choices[0].get("message")
-                if not isinstance(message, Mapping):
-                    raise ValueError("provider response did not include a message")
-                raw_content = message.get("content")
-                if raw_content is None:
-                    content = None
-                elif isinstance(raw_content, str):
-                    content = raw_content.strip() or None
-                else:
-                    raise ValueError("provider content must be text or null")
-                tool_calls, parse_failed = parse_openai_tool_calls(message.get("tool_calls"))
-                return Completion(
-                    text=content,
-                    used_fallback=False,
-                    tool_calls=tool_calls,
-                    tool_call_parse_failed=parse_failed,
-                )
+            client = _get_shared_client()
+            response, retries = await _post_with_retries(
+                client,
+                endpoint,
+                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+                payload=payload,
+                timeout=timeout or 20,
+            )
+            response.raise_for_status()
+            response_payload = response.json()
+            if not isinstance(response_payload, Mapping):
+                raise ValueError("provider response must be an object")
+            choices = response_payload.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+                raise ValueError("provider response did not include a choice")
+            message = choices[0].get("message")
+            if not isinstance(message, Mapping):
+                raise ValueError("provider response did not include a message")
+            raw_content = message.get("content")
+            if raw_content is None:
+                content = None
+            elif isinstance(raw_content, str):
+                content = raw_content.strip() or None
+            else:
+                raise ValueError("provider content must be text or null")
+            tool_calls, parse_failed = parse_openai_tool_calls(message.get("tool_calls"))
+            return Completion(
+                text=content,
+                used_fallback=False,
+                tool_calls=tool_calls,
+                tool_call_parse_failed=parse_failed,
+            )
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
-            return Completion(text=None, used_fallback=True, reason=f"模型调用失败：{type(error).__name__}")
+            retries = getattr(error, "retries", retries)
+            suffix = f"（已重试 {retries} 次）" if retries else ""
+            return Completion(text=None, used_fallback=True, reason=f"模型调用失败：{type(error).__name__}{suffix}")
 
     async def stream_complete(
         self,
@@ -402,6 +503,7 @@ class OpenAICompatibleClient:
                     events.append(LLMStreamToolCallDelta(index))
             return events, False
 
+        retries = 0
         try:
             payload = self._request_payload(
                 system_prompt,
@@ -412,37 +514,56 @@ class OpenAICompatibleClient:
                 model=model,
                 stream=True,
             )
-            async with httpx.AsyncClient(timeout=20) as client:
-                async with client.stream(
-                    "POST",
-                    endpoint,
-                    headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-                    json=payload,
-                ) as response:
-                    response.raise_for_status()
-                    data_lines: list[str] = []
-                    finished = False
-                    async for raw_line in response.aiter_lines():
-                        line = raw_line.removesuffix("\r")
-                        if not line:
-                            if not data_lines:
+            client = _get_shared_client()
+            while True:
+                body_received = False
+                try:
+                    async with client.stream(
+                        "POST",
+                        endpoint,
+                        headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+                        json=payload,
+                        timeout=20,
+                    ) as response:
+                        response.raise_for_status()
+                        data_lines: list[str] = []
+                        finished = False
+                        async for raw_line in response.aiter_lines():
+                            body_received = True
+                            line = raw_line.removesuffix("\r")
+                            if not line:
+                                if not data_lines:
+                                    continue
+                                events, finished = parse_data("\n".join(data_lines))
+                                data_lines.clear()
+                                for event in events:
+                                    yield event
+                                if finished:
+                                    break
                                 continue
-                            events, finished = parse_data("\n".join(data_lines))
-                            data_lines.clear()
+                            if line.startswith(":"):
+                                continue
+                            if line.startswith("data:"):
+                                value = line[5:]
+                                data_lines.append(value[1:] if value.startswith(" ") else value)
+                        if data_lines and not finished:
+                            events, _ = parse_data("\n".join(data_lines))
                             for event in events:
                                 yield event
-                            if finished:
-                                break
-                            continue
-                        if line.startswith(":"):
-                            continue
-                        if line.startswith("data:"):
-                            value = line[5:]
-                            data_lines.append(value[1:] if value.startswith(" ") else value)
-                    if data_lines and not finished:
-                        events, _ = parse_data("\n".join(data_lines))
-                        for event in events:
-                            yield event
+                except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as error:
+                    # Only pristine attempts may retry: once provider bytes arrived
+                    # the consumer may already hold deltas, so recovery belongs to
+                    # the downstream reset mechanism instead of a replay here.
+                    if isinstance(error, httpx.HTTPStatusError):
+                        transient = _is_transient_status(error.response.status_code)
+                    else:
+                        transient = True
+                    if body_received or not transient or retries >= _LLM_MAX_RETRIES:
+                        raise
+                    retries += 1
+                    await asyncio.sleep(_retry_backoff(retries))
+                    continue
+                break
 
             raw_calls: list[dict[str, object]] = []
             for index in sorted(tool_calls):
@@ -461,11 +582,12 @@ class OpenAICompatibleClient:
                 )
             )
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
+            suffix = f"（已重试 {retries} 次）" if retries else ""
             yield LLMStreamCompleted(
                 Completion(
                     text=None,
                     used_fallback=True,
-                    reason=f"模型流式调用失败：{type(error).__name__}",
+                    reason=f"模型流式调用失败：{type(error).__name__}{suffix}",
                 )
             )
 
@@ -485,6 +607,7 @@ class OpenAICompatibleClient:
             return Completion(text=None, used_fallback=True, reason="未配置 LLM_API_KEY")
 
         endpoint = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
+        retries = 0
         try:
             payload: dict[str, object] = {
                 "model": vision_model,
@@ -500,25 +623,29 @@ class OpenAICompatibleClient:
                     },
                 ],
             }
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.post(
-                    endpoint,
-                    headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-                    json=payload,
-                )
-                response.raise_for_status()
-                response_payload = response.json()
-                if not isinstance(response_payload, Mapping):
-                    raise ValueError("provider response must be an object")
-                choices = response_payload.get("choices")
-                if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
-                    raise ValueError("provider response did not include a choice")
-                message = choices[0].get("message")
-                if not isinstance(message, Mapping):
-                    raise ValueError("provider response did not include a message")
-                content = message.get("content")
-                if not isinstance(content, str) or not content.strip():
-                    raise ValueError("provider response did not include image analysis text")
-                return Completion(text=content.strip(), used_fallback=False)
+            client = _get_shared_client()
+            response, retries = await _post_with_retries(
+                client,
+                endpoint,
+                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+                payload=payload,
+                timeout=30,
+            )
+            response.raise_for_status()
+            response_payload = response.json()
+            if not isinstance(response_payload, Mapping):
+                raise ValueError("provider response must be an object")
+            choices = response_payload.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+                raise ValueError("provider response did not include a choice")
+            message = choices[0].get("message")
+            if not isinstance(message, Mapping):
+                raise ValueError("provider response did not include a message")
+            content = message.get("content")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("provider response did not include image analysis text")
+            return Completion(text=content.strip(), used_fallback=False)
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
-            return Completion(text=None, used_fallback=True, reason=f"图片模型调用失败：{type(error).__name__}")
+            retries = getattr(error, "retries", retries)
+            suffix = f"（已重试 {retries} 次）" if retries else ""
+            return Completion(text=None, used_fallback=True, reason=f"图片模型调用失败：{type(error).__name__}{suffix}")
