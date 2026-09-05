@@ -21,7 +21,7 @@ from pypdf.errors import PdfReadError
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from ..config import settings
+from ..config import DEMO_TOKEN_SECRETS, settings
 from ..database import SessionLocal, get_db
 from ..dependencies import get_current_user, require_roles
 from ..models import (
@@ -138,13 +138,6 @@ _TICKET_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 _HANDOFF_CATEGORIES = frozenset({"系统故障", "付款咨询", "合同咨询"})
 _ticket_tasks: set[asyncio.Task[None]] = set()
-DEMO_TOKEN_SECRETS = frozenset(
-    {
-        "change-this-before-production",
-        "replace-with-a-long-random-secret-before-production",
-        "replace-with-a-long-random-secret",
-    }
-)
 
 
 def _handoff_available(result: AgentResult) -> bool:
@@ -553,8 +546,11 @@ async def _enrich_ticket_suggestion(ticket_id: int, question: str, owner_email: 
             task_db.commit()
             task_db.refresh(ticket)
             event = _ticket_event("updated", ticket)
-        if ticket_event_broker.has_subscribers():
-            await ticket_event_broker.publish(event)
+        # Publish unconditionally: with the Redis broker, has_subscribers() only
+        # sees THIS process's SSE consumers, so gating here would silently drop
+        # the event for consumers attached to other workers. Publishing to a
+        # broker without subscribers is a no-op.
+        await ticket_event_broker.publish(event)
     except Exception:
         # A failed draft must remain actionable.  Never turn a successful 201
         # into a failed request merely because the optional AI enrichment died.
@@ -572,8 +568,7 @@ async def _enrich_ticket_suggestion(ticket_id: int, question: str, owner_email: 
                 task_db.commit()
                 task_db.refresh(ticket)
                 event = _ticket_event("updated", ticket)
-            if ticket_event_broker.has_subscribers():
-                await ticket_event_broker.publish(event)
+            await ticket_event_broker.publish(event)
         except Exception:
             # Background errors are intentionally isolated from the request
             # lifecycle; the ticket remains visible for manual handling.
@@ -911,18 +906,14 @@ __all__ = [
     "AdminAuditLog",
     "AdminAuditLogOut",
     "AdminAuditLogPage",
-    "AgentResult",
     "AgentStreamCompleted",
     "AgentStreamReset",
     "AgentStreamToken",
     "AgentStreamTrace",
     "AgentTrace",
-    "Artifact",
-    "AssistantWorkflow",
     "AuthResponse",
     "ChatRequest",
     "ChatResponse",
-    "Citation",
     "Conversation",
     "ConversationAssignmentUpdate",
     "ConversationAuditDetail",
@@ -932,11 +923,9 @@ __all__ = [
     "ConversationMessageCreate",
     "ConversationOut",
     "ConversationStatusUpdate",
-    "DEMO_TOKEN_SECRETS",
     "DashboardDetailScope",
     "DashboardDetailsOut",
     "Depends",
-    "DifyGateway",
     "DifyMediaProxyError",
     "DifyMediaProxyRequest",
     "DifyMediaResponse",
@@ -985,7 +974,6 @@ __all__ = [
     "SearchRequest",
     "SearchResponse",
     "Session",
-    "SessionLocal",
     "SettingOut",
     "SettingUpdate",
     "StreamingResponse",
@@ -1006,11 +994,7 @@ __all__ = [
     "UserPreferenceUpdate",
     "UserResetPassword",
     "UserRoleUpdate",
-    "VisionService",
-    "_HANDOFF_CATEGORIES",
-    "_TICKET_PRIORITY_ORDER",
     "_TICKET_TRANSITIONS",
-    "_audit_json_array",
     "_audit_message_payload",
     "_auth_response",
     "_begin_chat",
@@ -1019,14 +1003,10 @@ __all__ = [
     "_conversation_audit_summary",
     "_conversation_event",
     "_conversation_message",
-    "_conversation_queue_payload",
     "_conversation_response",
-    "_enrich_ticket_suggestion",
     "_ensure_support_control_allowed",
     "_executive_conversation",
-    "_handoff_available",
     "_image_media_type",
-    "_normalize_dify_router_outputs",
     "_notification_event",
     "_owned_conversation",
     "_persist_chat_result",
@@ -1034,21 +1014,16 @@ __all__ = [
     "_public_support_conversation_event",
     "_public_ticket_event",
     "_run_chat",
-    "_run_chat_via_router_or_local",
     "_schedule_ticket_enrichment",
     "_support_conversation",
     "_ticket_event",
-    "_ticket_tasks",
     "_token_secret_security",
     "asyncio",
     "build_answer_cache_key",
-    "cancel_ticket_enrichment_tasks",
-    "create_access_token",
     "csv",
     "datetime",
     "delete",
     "deserialize_agent_result",
-    "dify_gateway",
     "final_answer_cache",
     "func",
     "get_current_user",
@@ -1070,18 +1045,13 @@ __all__ = [
     "secrets",
     "select",
     "serialize_agent_result",
-    "settings",
     "should_cache_result",
     "status",
-    "ticket_event_broker",
     "time",
     "timedelta",
     "timezone",
     "update",
-    "uuid4",
     "validate_setting",
     "verify_password",
-    "vision_service",
-    "workflow",
     "zipfile",
 ]
