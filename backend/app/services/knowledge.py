@@ -5,7 +5,6 @@ import json
 import math
 import re
 import threading
-from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,6 +14,15 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..models import KnowledgeChunk, KnowledgeDocument
 from .cache import retrieval_cache
+from .embeddings import (
+    EMBEDDING_DIMENSIONS,
+    embedding_version,
+    embed_texts,
+    embed_texts_with_fallback,
+    hash_embedding,
+    is_cloud_configured,
+    token_features,
+)
 from .runtime_settings import get_runtime_settings
 
 try:
@@ -29,8 +37,9 @@ except ImportError:  # pragma: no cover - exercised only before optional package
     LANGCHAIN_RAG_AVAILABLE = False
 
 
-EMBEDDING_DIMENSIONS = 192
-EMBEDDING_VERSION = "hash-faiss-v1"
+# Snapshot kept for backwards compatibility (tests and callers); internal code
+# uses the embedding_version() function so a settings change is honored live.
+EMBEDDING_VERSION = embedding_version()
 RETRIEVAL_VERSION = "hybrid-rrf-v1"
 _RRF_K = 60
 _VECTOR_RRF_WEIGHT = 0.65
@@ -49,46 +58,27 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", "", text.lower())
 
 
-def _tokens(text: str) -> Counter[str]:
-    """Return deterministic mixed Chinese/Latin features for local embeddings."""
-    normalized = _normalize(text)
-    chinese = re.findall(r"[\u4e00-\u9fff]+", normalized)
-    latin = re.findall(r"[a-z0-9_]+", normalized)
-    grams = [f"zh:{piece[index:index + 2]}" for piece in chinese for index in range(max(len(piece) - 1, 0))]
-    singles = [f"c:{char}" for piece in chinese for char in piece]
-    return Counter([*grams, *singles, *(f"w:{token}" for token in latin)])
-
-
-def _hash_embedding(text: str, dimensions: int = EMBEDDING_DIMENSIONS) -> list[float]:
-    """Create a stable, normalized local embedding without sending text externally.
-
-    The class intentionally implements LangChain's Embeddings contract. This makes the
-    classroom FAISS pipeline reproducible on a disconnected machine while leaving a
-    single, well-defined replacement point for a hosted embedding model later.
-    """
-    vector = [0.0] * dimensions
-    for feature, count in _tokens(text).items():
-        digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
-        bucket = int.from_bytes(digest[:4], "big") % dimensions
-        sign = 1.0 if digest[4] & 1 else -1.0
-        vector[bucket] += sign * math.sqrt(count)
-    norm = math.sqrt(sum(value * value for value in vector))
-    return [value / norm for value in vector] if norm else vector
-
-
 if LANGCHAIN_RAG_AVAILABLE:
 
-    class DeterministicHashEmbeddings(Embeddings):
-        """Offline LangChain embedding adapter used by the local FAISS index."""
+    class ActiveEmbeddings(Embeddings):
+        """LangChain adapter: cloud embeddings when configured, local hash otherwise.
+
+        Query-time cloud failures propagate as EmbeddingAPIError (a RuntimeError),
+        which _faiss_retrieve translates into the sparse fallback instead of
+        silently comparing a hash query vector against cloud document vectors.
+        """
 
         def embed_documents(self, texts: list[str]) -> list[list[float]]:
-            return [_hash_embedding(text) for text in texts]
+            if is_cloud_configured():
+                return embed_texts(texts)
+            return [hash_embedding(text) for text in texts]
 
         def embed_query(self, text: str) -> list[float]:
-            return _hash_embedding(text)
+            if is_cloud_configured():
+                return embed_texts([text])[0]
+            return hash_embedding(text)
 
-
-    _embeddings: Any = DeterministicHashEmbeddings()
+    _embeddings: Any = ActiveEmbeddings()
 else:
     _embeddings = None
 
@@ -138,33 +128,42 @@ def split_text(text: str, size: int = 220, overlap: int = 40) -> list[str]:
     return chunks
 
 
-def _vector_payload(text: str) -> str:
+def _vector_payload(text: str, vector: list[float], version: str) -> str:
     return json.dumps(
-        {"version": EMBEDDING_VERSION, "embedding": _hash_embedding(text)},
+        {"version": version, "embedding": vector},
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def _embedding_dimensions_match(embedding: list[object]) -> bool:
+    """Hash vectors have a fixed width; cloud vectors are provider-defined."""
+    if is_cloud_configured():
+        return len(embedding) > 0
+    return len(embedding) == EMBEDDING_DIMENSIONS
 
 
 def _stored_embedding(payload: str, text: str) -> list[float]:
     try:
         parsed = json.loads(payload)
         embedding = parsed.get("embedding") if isinstance(parsed, dict) else None
-        if isinstance(embedding, list) and len(embedding) == EMBEDDING_DIMENSIONS:
+        if isinstance(embedding, list) and _embedding_dimensions_match(embedding):
             return [float(value) for value in embedding]
     except (TypeError, ValueError, json.JSONDecodeError):
         pass
-    return _hash_embedding(text)
+    return hash_embedding(text)
 
 
 def _is_current_vector_payload(payload: str) -> bool:
     try:
         parsed = json.loads(payload)
+        embedding = parsed.get("embedding") if isinstance(parsed, dict) else None
         return (
             isinstance(parsed, dict)
-            and parsed.get("version") == EMBEDDING_VERSION
-            and isinstance(parsed.get("embedding"), list)
-            and len(parsed["embedding"]) == EMBEDDING_DIMENSIONS
+            and parsed.get("version") == embedding_version()
+            and isinstance(embedding, list)
+            and bool(embedding)
+            and _embedding_dimensions_match(embedding)
         )
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
@@ -184,7 +183,12 @@ def _documents_for(document: KnowledgeDocument, size: int, overlap: int) -> list
 
 
 def index_document(db: Session, document: KnowledgeDocument) -> int:
-    """Persist LangChain-split chunks plus deterministic embeddings for FAISS retrieval."""
+    """Persist LangChain-split chunks plus embeddings for FAISS retrieval.
+
+    Embeddings come from the configured cloud provider, falling back to the
+    local hash implementation (labeled with the hash version) when the cloud
+    call fails so stored vectors always match their payload version label.
+    """
     runtime_settings = get_runtime_settings(db)
     db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.document_id == document.id))
     documents = _documents_for(
@@ -192,15 +196,17 @@ def index_document(db: Session, document: KnowledgeDocument) -> int:
         size=runtime_settings.knowledge_chunk_size,
         overlap=runtime_settings.knowledge_chunk_overlap,
     )
+    texts = [item.page_content if LANGCHAIN_RAG_AVAILABLE else item for item in documents]
+    vectors, embedding_label = embed_texts_with_fallback(texts)
     db.add_all(
         [
             KnowledgeChunk(
                 document_id=document.id,
                 position=position,
-                content=item.page_content if LANGCHAIN_RAG_AVAILABLE else item,
-                vector_json=_vector_payload(item.page_content if LANGCHAIN_RAG_AVAILABLE else item),
+                content=text,
+                vector_json=_vector_payload(text, vector, embedding_label),
             )
-            for position, item in enumerate(documents)
+            for position, (text, vector) in enumerate(zip(texts, vectors))
         ]
     )
     # A re-index can change retrieval results without changing the parent row.
@@ -236,20 +242,25 @@ def ensure_documents_indexed(db: Session) -> int:
 
 
 def _knowledge_version(db: Session) -> str:
-    rows = db.execute(
-        select(KnowledgeChunk.id, KnowledgeDocument.id, KnowledgeDocument.updated_at, KnowledgeChunk.content)
-        .join(KnowledgeDocument, KnowledgeChunk.document_id == KnowledgeDocument.id)
-        .where(KnowledgeDocument.status == "ready")
-        .order_by(KnowledgeChunk.id)
-    ).all()
-    digest = hashlib.sha256()
-    for chunk_id, document_id, updated_at, content in rows:
-        digest.update(f"{chunk_id}:{document_id}:{updated_at}:{content}".encode("utf-8"))
-    return f"{len(rows)}:{digest.hexdigest()[:16]}"
+    """Cheap corpus fingerprint: ready-document count plus latest update time.
+
+    Replaces the previous full-corpus sha256 walk, which read every chunk's
+    content on every retrieval call. Content edits bump ``updated_at`` (via
+    onupdate), deletions/insertions change the count, and chunk-only re-indexes
+    explicitly clear the retrieval and vector caches, so precision beyond this
+    fingerprint is not required for correctness.
+    """
+    row = db.execute(
+        select(func.count(KnowledgeDocument.id), func.max(KnowledgeDocument.updated_at)).where(
+            KnowledgeDocument.status == "ready"
+        )
+    ).one()
+    count, latest_update = int(row[0] or 0), row[1]
+    return f"{count}:{latest_update}"
 
 
 def knowledge_version(db: Session) -> str:
-    return f"{EMBEDDING_VERSION}:{RETRIEVAL_VERSION}:{_knowledge_version(db)}"
+    return f"{embedding_version()}:{RETRIEVAL_VERSION}:{_knowledge_version(db)}"
 
 
 def _cache_key(db: Session, query: str, top_k: int) -> str:
@@ -257,7 +268,7 @@ def _cache_key(db: Session, query: str, top_k: int) -> str:
     # Include the retrieval implementation version so a sparse-to-FAISS migration
     # cannot serve an old ranking from Redis after a rolling restart.
     return (
-        f"{settings.redis_key_prefix}:rag:{EMBEDDING_VERSION}:{RETRIEVAL_VERSION}:"
+        f"{settings.redis_key_prefix}:rag:{embedding_version()}:{RETRIEVAL_VERSION}:"
         f"{_knowledge_version(db)}:{top_k}:{digest}"
     )
 
@@ -271,6 +282,10 @@ def _build_faiss_index(db: Session, version: str) -> Any | None:
         .where(KnowledgeDocument.status == "ready")
         .order_by(KnowledgeChunk.id)
     ).all()
+    # Only chunks stored by the active embedding implementation may enter the
+    # index: mixing vector spaces (e.g. hash vectors written during a cloud
+    # outage with cloud vectors from healthy runs) would corrupt the ranking.
+    rows = [(chunk, document) for chunk, document in rows if _is_current_vector_payload(chunk.vector_json)]
     if not rows:
         return None
     text_embeddings = [(chunk.content, _stored_embedding(chunk.vector_json, chunk.content)) for chunk, _ in rows]
@@ -298,16 +313,21 @@ def _faiss_index(db: Session) -> Any | None:
 
 
 def text_similarity(left: str, right: str) -> float:
-    """Cosine similarity of deterministic local embeddings (normalized vectors)."""
+    """Cosine similarity of local hash embeddings (normalized vectors).
 
-    left_vector = _hash_embedding(left)
-    right_vector = _hash_embedding(right)
+    Deliberately stays on the offline hash implementation even when a cloud
+    provider is configured: both sides use the same space, so the groundedness
+    heuristic keeps working without external calls.
+    """
+
+    left_vector = hash_embedding(left)
+    right_vector = hash_embedding(right)
     return sum(a * b for a, b in zip(left_vector, right_vector))
 
 
 def _sparse_fallback(db: Session, query: str, top_k: int) -> list[RetrievalHit]:
     """Keep retrieval available if an optional vector dependency is temporarily absent."""
-    query_vector = _tokens(query)
+    query_vector = token_features(query)
     candidates: list[RetrievalHit] = []
     normalized_query = _normalize(query)
     rows = db.execute(
@@ -316,7 +336,7 @@ def _sparse_fallback(db: Session, query: str, top_k: int) -> list[RetrievalHit]:
         .where(KnowledgeDocument.status == "ready")
     ).all()
     for chunk, document in rows:
-        chunk_vector = _tokens(chunk.content)
+        chunk_vector = token_features(chunk.content)
         numerator = sum(value * chunk_vector.get(token, 0) for token, value in query_vector.items())
         denominator = math.sqrt(sum(value * value for value in query_vector.values())) * math.sqrt(
             sum(value * value for value in chunk_vector.values())

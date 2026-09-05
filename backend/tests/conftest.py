@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-TEST_DATABASE = Path(__file__).parent / "test_business_ai.db"
+# PYTEST_DB_SUFFIX lets parallel test processes use disjoint database files.
+TEST_DATABASE = Path(__file__).parent / f"test_business_ai{os.getenv('PYTEST_DB_SUFFIX', '')}.db"
 os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DATABASE.as_posix()}"
 os.environ["TOKEN_SECRET"] = "test-only-secret"
@@ -14,6 +15,7 @@ os.environ["DEMO_PASSWORD"] = "test-demo-password"
 # Tests must remain deterministic and must never send demo fixtures to a configured
 # local cloud provider loaded from the repository-root .env file.
 os.environ["LLM_API_KEY"] = ""
+os.environ["EMBEDDING_API_KEY"] = ""
 os.environ["DIFY_API_URL"] = ""
 os.environ["DIFY_API_KEY"] = ""
 os.environ["REDIS_URL"] = ""

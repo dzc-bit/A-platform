@@ -5,13 +5,14 @@ import os
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import DEMO_PASSWORD_DEFAULT
 from ..models import AISetting, KnowledgeDocument, Order, SupportTicket, User
 from ..security import hash_password
 from .knowledge import index_document
 from .runtime_settings import SETTING_DEFAULTS, SETTING_DESCRIPTIONS, ensure_runtime_settings
 
 
-DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "replace-me-in-env")
+DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", DEMO_PASSWORD_DEFAULT)
 
 
 def seed_demo_data(db: Session) -> None:

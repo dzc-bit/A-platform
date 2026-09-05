@@ -1,0 +1,16 @@
+# Ruff configuration for the backend. The rule set is deliberately close to
+# Ruff's defaults (pycodestyle subset + pyflakes): correctness-focused checks
+# without style churn, compatible with the existing codebase.
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test helpers intentionally re-export names for the suite (login, client...).
+"tests/conftest.py" = ["F401"]
+# api.py re-exports shared names on purpose: tests access them through the
+# module (api_module.stream_chat, api_module._token_secret_security, ...).
+"app/api.py" = ["F401"]

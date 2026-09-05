@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-05T13:55:20.061976+00:00",
+  "generated_at": "2026-09-05T14:21:02.892807+00:00",
   "mode": "deterministic_offline",
   "metrics": {
     "classification_accuracy": {
@@ -41,49 +41,13 @@
   "cases": [
     {
       "index": 1,
-      "question": "系统今天突然不可用了，客户无法访问服务。",
+      "question": "昨晚十点后平台多次崩溃，客户服务响应也很慢，请马上跟进。",
       "expected_category": "系统故障",
       "actual_category": "系统故障",
       "classification_passed": true,
       "expected_document": "商务服务响应与升级规范",
       "retrieved_titles": [
-        "企业账户与订单查询说明",
-        "AI 助手回答边界与质检规则",
-        "商务服务响应与升级规范"
-      ],
-      "retrieval_passed": true,
-      "citation_passed": true,
-      "trace_passed": true,
-      "safety_required": true,
-      "safety_passed": true
-    },
-    {
-      "index": 2,
-      "question": "合同条款需要修改，应该找谁审批？",
-      "expected_category": "合同咨询",
-      "actual_category": "合同咨询",
-      "classification_passed": true,
-      "expected_document": "合同与发票办理指引",
-      "retrieved_titles": [
-        "合同与发票办理指引",
-        "AI 助手回答边界与质检规则",
-        "商务服务响应与升级规范"
-      ],
-      "retrieval_passed": true,
-      "citation_passed": true,
-      "trace_passed": true,
-      "safety_required": true,
-      "safety_passed": true
-    },
-    {
-      "index": 3,
-      "question": "开票时需要提供税号和抬头吗？",
-      "expected_category": "发票办理",
-      "actual_category": "发票办理",
-      "classification_passed": true,
-      "expected_document": "合同与发票办理指引",
-      "retrieved_titles": [
-        "合同与发票办理指引",
+        "商务服务响应与升级规范",
         "企业账户与订单查询说明",
         "AI 助手回答边界与质检规则"
       ],
@@ -94,16 +58,52 @@
       "safety_passed": true
     },
     {
+      "index": 2,
+      "question": "客户要求调整违约责任条款，这类修订是否需要法务介入审核？",
+      "expected_category": "合同咨询",
+      "actual_category": "合同咨询",
+      "classification_passed": true,
+      "expected_document": "合同与发票办理指引",
+      "retrieved_titles": [
+        "合同与发票办理指引",
+        "AI 助手回答边界与质检规则",
+        "企业账户与订单查询说明"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
+      "index": 3,
+      "question": "我们公司的抬头变更了，之前的开票信息还能继续使用吗？",
+      "expected_category": "发票办理",
+      "actual_category": "发票办理",
+      "classification_passed": true,
+      "expected_document": "合同与发票办理指引",
+      "retrieved_titles": [
+        "合同与发票办理指引",
+        "AI 助手回答边界与质检规则",
+        "企业账户与订单查询说明"
+      ],
+      "retrieval_passed": true,
+      "citation_passed": true,
+      "trace_passed": true,
+      "safety_required": true,
+      "safety_passed": true
+    },
+    {
       "index": 4,
-      "question": "订单现在处于什么进度，什么时候可以验收？",
+      "question": "帮我看看当前履约中的项目有哪些已经到了验收节点。",
       "expected_category": "订单查询",
       "actual_category": "订单查询",
       "classification_passed": true,
       "expected_document": "企业账户与订单查询说明",
       "retrieved_titles": [
-        "合同与发票办理指引",
         "企业账户与订单查询说明",
-        "商务服务响应与升级规范"
+        "商务服务响应与升级规范",
+        "AI 助手回答边界与质检规则"
       ],
       "retrieval_passed": true,
       "citation_passed": true,
@@ -113,14 +113,14 @@
     },
     {
       "index": 5,
-      "question": "账号密码忘记了，邮箱也没有收到重置链接。",
+      "question": "员工反馈新邮箱没有收到激活邮件，导致无法登录后台。",
       "expected_category": "账户访问",
       "actual_category": "账户访问",
       "classification_passed": true,
       "expected_document": "企业账户与订单查询说明",
       "retrieved_titles": [
         "企业账户与订单查询说明",
-        "商务服务响应与升级规范",
+        "AI 助手回答边界与质检规则",
         "合同与发票办理指引"
       ],
       "retrieval_passed": true,
@@ -131,15 +131,15 @@
     },
     {
       "index": 6,
-      "question": "已经付款后可以提现吗，退款流程是什么？",
+      "question": "财务对上月账单里一笔重复扣款有疑问，需要核实退款路径。",
       "expected_category": "付款咨询",
       "actual_category": "付款咨询",
       "classification_passed": true,
       "expected_document": null,
       "retrieved_titles": [
-        "商务服务响应与升级规范",
         "AI 助手回答边界与质检规则",
-        "合同与发票办理指引"
+        "合同与发票办理指引",
+        "企业账户与订单查询说明"
       ],
       "retrieval_passed": null,
       "citation_passed": null,
@@ -149,15 +149,15 @@
     },
     {
       "index": 7,
-      "question": "平台报错并且服务中断，演示无法继续。",
+      "question": "生产环境数据库崩溃，客户资料暂时读不出来，请立即升级处理。",
       "expected_category": "系统故障",
       "actual_category": "系统故障",
       "classification_passed": true,
       "expected_document": "商务服务响应与升级规范",
       "retrieved_titles": [
-        "AI 助手回答边界与质检规则",
+        "商务服务响应与升级规范",
         "企业账户与订单查询说明",
-        "商务服务响应与升级规范"
+        "AI 助手回答边界与质检规则"
       ],
       "retrieval_passed": true,
       "citation_passed": true,
@@ -167,7 +167,7 @@
     },
     {
       "index": 8,
-      "question": "请查询客户订单的交付状态。",
+      "question": "客户想了解交付里程碑的进度安排，从哪里能看到最新状态？",
       "expected_category": "订单查询",
       "actual_category": "订单查询",
       "classification_passed": true,
@@ -175,7 +175,7 @@
       "retrieved_titles": [
         "企业账户与订单查询说明",
         "合同与发票办理指引",
-        "AI 助手回答边界与质检规则"
+        "商务服务响应与升级规范"
       ],
       "retrieval_passed": true,
       "citation_passed": true,
@@ -185,15 +185,15 @@
     },
     {
       "index": 9,
-      "question": "合同初审大概需要几个工作日？",
+      "question": "标准合同的审批流程要准备哪些材料，初审需要几天？",
       "expected_category": "合同咨询",
       "actual_category": "合同咨询",
       "classification_passed": true,
       "expected_document": "合同与发票办理指引",
       "retrieved_titles": [
         "合同与发票办理指引",
-        "商务服务响应与升级规范",
-        "AI 助手回答边界与质检规则"
+        "企业账户与订单查询说明",
+        "商务服务响应与升级规范"
       ],
       "retrieval_passed": true,
       "citation_passed": true,
@@ -203,15 +203,15 @@
     },
     {
       "index": 10,
-      "question": "如何更新企业管理员的登录邮箱？",
-      "expected_category": "账户访问",
-      "actual_category": "账户访问",
+      "question": "增值税专用发票一般多长时间能开出来？整个流程要走哪些环节？",
+      "expected_category": "发票办理",
+      "actual_category": "发票办理",
       "classification_passed": true,
-      "expected_document": "企业账户与订单查询说明",
+      "expected_document": "合同与发票办理指引",
       "retrieved_titles": [
-        "企业账户与订单查询说明",
         "合同与发票办理指引",
-        "商务服务响应与升级规范"
+        "商务服务响应与升级规范",
+        "企业账户与订单查询说明"
       ],
       "retrieval_passed": true,
       "citation_passed": true,
@@ -221,15 +221,15 @@
     },
     {
       "index": 11,
-      "question": "发票申请提交后多久可以处理？",
-      "expected_category": "发票办理",
-      "actual_category": "发票办理",
+      "question": "管理员的账号被锁定了，重置密码的时候需要注意什么？",
+      "expected_category": "账户访问",
+      "actual_category": "账户访问",
       "classification_passed": true,
-      "expected_document": "合同与发票办理指引",
+      "expected_document": "企业账户与订单查询说明",
       "retrieved_titles": [
-        "合同与发票办理指引",
         "企业账户与订单查询说明",
-        "商务服务响应与升级规范"
+        "商务服务响应与升级规范",
+        "合同与发票办理指引"
       ],
       "retrieval_passed": true,
       "citation_passed": true,
@@ -239,15 +239,15 @@
     },
     {
       "index": 12,
-      "question": "账单金额有疑问，需要核对支付记录。",
-      "expected_category": "付款咨询",
-      "actual_category": "付款咨询",
+      "question": "你们平台主要服务哪些行业的客户？顺便介绍一下公司背景。",
+      "expected_category": "一般咨询",
+      "actual_category": "一般咨询",
       "classification_passed": true,
       "expected_document": null,
       "retrieved_titles": [
         "企业账户与订单查询说明",
         "合同与发票办理指引",
-        "商务服务响应与升级规范"
+        "AI 助手回答边界与质检规则"
       ],
       "retrieval_passed": null,
       "citation_passed": null,

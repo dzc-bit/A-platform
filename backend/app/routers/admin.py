@@ -1,7 +1,43 @@
 """Administration: users, settings, audit and moderation routes (mechanically split from app/api.py)."""
 
-from . import shared
-from .shared import *  # noqa: F401,F403
+from .shared import (  # noqa: F401
+    AISetting,
+    APIRouter,
+    AdminAuditLog,
+    AdminAuditLogOut,
+    AdminAuditLogPage,
+    Conversation,
+    ConversationAuditDetail,
+    ConversationAuditSummary,
+    Depends,
+    HTTPException,
+    Message,
+    Query,
+    SETTING_DEFAULTS,
+    SETTING_DESCRIPTIONS,
+    Session,
+    SettingOut,
+    SettingUpdate,
+    User,
+    UserCreate,
+    UserOut,
+    UserResetPassword,
+    UserRoleUpdate,
+    _audit_message_payload,
+    _conversation_audit_payload,
+    _conversation_audit_summary,
+    datetime,
+    func,
+    get_db,
+    hash_password,
+    record_admin_action,
+    require_roles,
+    retrieval_cache,
+    select,
+    status,
+    timezone,
+    validate_setting,
+)
 
 router = APIRouter()
 

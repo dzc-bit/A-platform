@@ -7,20 +7,23 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@vitejs/plugin-vue": "latest",
-    "axios": "latest",
-    "lucide-vue-next": "latest",
-    "pinia": "latest",
-    "vue": "latest",
-    "vue-router": "latest"
+    "@vitejs/plugin-vue": "6.0.8",
+    "axios": "1.18.1",
+    "lucide-vue-next": "1.0.0",
+    "pinia": "4.0.2",
+    "vue": "3.5.39",
+    "vue-router": "5.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "jsdom": "26.1.0",
     "typescript": "5.7.3",
-    "vite": "latest",
-    "vue-tsc": "latest"
+    "vite": "8.1.4",
+    "vue-tsc": "3.3.7",
+    "vitest": "3.2.4"
   }
 }

@@ -1,7 +1,32 @@
 """Voice capabilities and Dify workflow/media endpoints routes (mechanically split from app/api.py)."""
 
 from . import shared
-from .shared import *  # noqa: F401,F403
+from .shared import (  # noqa: F401
+    APIRouter,
+    AgentTrace,
+    Conversation,
+    Depends,
+    DifyMediaProxyError,
+    DifyMediaProxyRequest,
+    DifyMediaResponse,
+    DifyTextToImageRequest,
+    DifyTextToSpeechRequest,
+    DifyWorkflowRequest,
+    DifyWorkflowResponse,
+    HTTPException,
+    Header,
+    LangGraphCallbackRequest,
+    LangGraphCallbackResponse,
+    Response,
+    Session,
+    User,
+    get_current_user,
+    get_db,
+    logging,
+    secrets,
+    status,
+    time,
+)
 
 router = APIRouter()
 

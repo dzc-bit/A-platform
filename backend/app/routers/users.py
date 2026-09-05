@@ -1,7 +1,16 @@
 """User preferences routes (mechanically split from app/api.py)."""
 
-from . import shared
-from .shared import *  # noqa: F401,F403
+from .shared import (  # noqa: F401
+    APIRouter,
+    Depends,
+    Session,
+    User,
+    UserPreferenceOut,
+    UserPreferenceUpdate,
+    get_current_user,
+    get_db,
+    get_user_preference,
+)
 
 router = APIRouter()
 

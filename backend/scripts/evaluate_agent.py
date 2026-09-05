@@ -20,6 +20,7 @@ os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["TOKEN_SECRET"] = "offline-evaluation-only"
 os.environ["LLM_API_KEY"] = ""
+os.environ["EMBEDDING_API_KEY"] = ""
 os.environ["DIFY_API_URL"] = ""
 os.environ["DIFY_API_KEY"] = ""
 os.environ["REDIS_URL"] = ""
@@ -82,8 +83,8 @@ def _metric(values: list[bool], threshold: float) -> Metric:
     return Metric(passed=passed, total=total, rate=passed / total if total else 1.0, threshold=threshold)
 
 
-async def evaluate() -> tuple[list[CaseResult], dict[str, Metric]]:
-    cases = json.loads((ROOT / "evaluations" / "agent_eval.json").read_text(encoding="utf-8"))
+async def evaluate(cases_path: Path) -> tuple[list[CaseResult], dict[str, Metric]]:
+    cases = json.loads(cases_path.read_text(encoding="utf-8"))
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -168,9 +169,15 @@ def _write_json(path: Path, results: list[CaseResult], metrics: dict[str, Metric
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="运行确定性的离线 Agent/RAG 验收评测")
+    parser.add_argument(
+        "--cases",
+        type=Path,
+        default=ROOT / "evaluations" / "agent_eval.json",
+        help="评测问题集 JSON（默认 seed 来源的 agent_eval.json；独立问题集用 independent_eval.json）",
+    )
     parser.add_argument("--json-output", type=Path, help="可选：把本次详细结果写入 JSON")
     args = parser.parse_args()
-    results, metrics = asyncio.run(evaluate())
+    results, metrics = asyncio.run(evaluate(args.cases))
 
     for result in results:
         passed = all(

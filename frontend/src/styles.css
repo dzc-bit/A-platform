@@ -107,18 +107,20 @@ small { color: #667575; }
 .login-footer svg { color: #0d9f95; }
 
 .app-shell { background: #f4f6f3; display: flex; min-height: 100vh; }
-.sidebar { background: #153b39; color: #fff; display: flex; flex: 0 0 248px; flex-direction: column; min-height: 100vh; padding: 19px 13px 13px; position: sticky; top: 0; z-index: 30; }
-.brand-row { align-items: center; display: flex; justify-content: space-between; min-height: 46px; padding: 0 7px; }
+/* Height is pinned to the viewport (never stretched to page height) so the
+   user card stays glued to the visible bottom-left corner at any scroll. */
+.sidebar { background: #153b39; color: #fff; display: flex; flex: 0 0 248px; flex-direction: column; height: 100vh; padding: 19px 13px 13px; position: sticky; top: 0; z-index: 30; }
+.brand-row { align-items: center; display: flex; flex-shrink: 0; justify-content: space-between; min-height: 46px; padding: 0 7px; }
 .brand { align-items: center; display: flex; gap: 10px; min-width: 0; }
 .brand-copy { display: grid; gap: 2px; min-width: 0; }
 .brand-copy strong { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brand-copy small { color: #b6d6cd; font-size: 11px; }
 .sidebar-close { color: #d3e6e1; display: none; }
-.primary-nav { display: grid; gap: 5px; margin-top: 43px; }
+.primary-nav { display: grid; gap: 5px; margin-top: 43px; min-height: 0; overflow-y: auto; }
 .nav-item { align-items: center; border-left: 3px solid transparent; color: #c1d8d3; display: flex; font-size: 14px; font-weight: 700; gap: 12px; min-height: 42px; padding: 0 12px; }
 .nav-item:hover { background: #224c49; color: #fff; }
 .nav-item--active { background: #22514d; border-left-color: #e3a03a; color: #fff; }
-.sidebar-footer { align-items: center; border-top: 1px solid #3e6965; display: flex; gap: 8px; justify-content: space-between; margin-top: auto; padding: 16px 7px 4px; }
+.sidebar-footer { align-items: center; border-top: 1px solid #3e6965; display: flex; flex-shrink: 0; gap: 8px; justify-content: space-between; margin-top: auto; padding: 16px 7px 4px; }
 .user-identity { align-items: center; display: flex; gap: 9px; min-width: 0; }
 .avatar { align-items: center; background: #e9f3f0; border-radius: 50%; color: #0a665f; display: inline-flex; flex: 0 0 30px; font-size: 12px; font-weight: 800; height: 30px; justify-content: center; width: 30px; }
 .user-copy { display: grid; gap: 2px; min-width: 0; }

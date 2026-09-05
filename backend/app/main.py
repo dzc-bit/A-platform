@@ -9,8 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .api import cancel_ticket_enrichment_tasks, router
-from .config import settings
+from .config import ensure_production_secrets, settings
 from .database import SessionLocal, init_database
+from .services import embeddings as embeddings_service
+from .services import llm as llm_service
 from .services.seed import seed_demo_data
 from .services.knowledge import ensure_documents_indexed
 
@@ -20,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Fail fast before any database or provider work when the deployment
+    # opted into the production secrets gate.
+    if settings.require_prod_secrets:
+        ensure_production_secrets(settings)
     init_database()
     with SessionLocal() as db:
         seed_demo_data(db)
@@ -29,6 +35,8 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         await cancel_ticket_enrichment_tasks()
+        await llm_service.aclose_shared_clients()
+        embeddings_service.close_http_client()
 
 
 app = FastAPI(

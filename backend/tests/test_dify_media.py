@@ -10,7 +10,6 @@ from dataclasses import replace
 import pytest
 
 from .conftest import login
-from app import api as api_module
 from app.routers import shared as api_shared
 from app.services import dify as dify_module
 from app.services.dify import DifyFetchedMedia, DifyGateway, DifyMediaResult
