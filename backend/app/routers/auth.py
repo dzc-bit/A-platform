@@ -1,7 +1,23 @@
 """Authentication routes (mechanically split from app/api.py)."""
 
-from . import shared
-from .shared import *  # noqa: F401,F403
+from .shared import (  # noqa: F401
+    APIRouter,
+    AuthResponse,
+    Depends,
+    HTTPException,
+    LoginRequest,
+    RegisterRequest,
+    Session,
+    User,
+    UserOut,
+    _auth_response,
+    get_current_user,
+    get_db,
+    hash_password,
+    select,
+    status,
+    verify_password,
+)
 
 router = APIRouter()
 

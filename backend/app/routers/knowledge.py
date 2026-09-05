@@ -1,7 +1,46 @@
 """Knowledge base documents, upload and search routes (mechanically split from app/api.py)."""
 
-from . import shared
-from .shared import *  # noqa: F401,F403
+from .shared import (  # noqa: F401
+    APIRouter,
+    Depends,
+    ElementTree,
+    File,
+    Form,
+    HTTPException,
+    KnowledgeCreate,
+    KnowledgeDocument,
+    KnowledgeOut,
+    KnowledgeReindexOut,
+    MAX_CSV_COLUMNS,
+    MAX_CSV_ROWS,
+    MAX_DOCX_COMPRESSION_RATIO,
+    MAX_DOCX_MEMBERS,
+    MAX_DOCX_UNCOMPRESSED_BYTES,
+    MAX_EXTRACTED_TEXT_CHARS,
+    MAX_PDF_PAGES,
+    MAX_UPLOAD_BYTES,
+    PdfReadError,
+    PdfReader,
+    PurePosixPath,
+    SUPPORTED_DOCUMENT_SUFFIXES,
+    SearchRequest,
+    SearchResponse,
+    Session,
+    UploadFile,
+    User,
+    csv,
+    get_current_user,
+    get_db,
+    index_document,
+    io,
+    re,
+    remove_document,
+    require_roles,
+    retrieve,
+    select,
+    status,
+    zipfile,
+)
 
 router = APIRouter()
 

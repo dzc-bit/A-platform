@@ -1,7 +1,32 @@
 """Operational dashboards and reports routes (mechanically split from app/api.py)."""
 
 from . import shared
-from .shared import *  # noqa: F401,F403
+from .shared import (  # noqa: F401
+    APIRouter,
+    Conversation,
+    ConversationAuditDetail,
+    DashboardDetailScope,
+    DashboardDetailsOut,
+    Depends,
+    HTTPException,
+    KnowledgeDocument,
+    Message,
+    Query,
+    Session,
+    SupportTicket,
+    TicketOut,
+    User,
+    _audit_message_payload,
+    _conversation_audit_payload,
+    datetime,
+    func,
+    get_db,
+    require_roles,
+    select,
+    status,
+    timedelta,
+    timezone,
+)
 
 router = APIRouter()
 
