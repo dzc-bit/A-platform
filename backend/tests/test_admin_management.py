@@ -207,7 +207,7 @@ class TestAdminProtection:
         assert response.status_code == 200
         # Now only one admin left — cannot demote the last one
         users = client.get("/api/v1/admin/users", headers=headers).json()
-        last_admin = next(u for u in users if u["role"] == "admin" and u["is_active"])
+        assert len([u for u in users if u["role"] == "admin" and u["is_active"]]) == 1
         # The last admin is the original admin, trying to demote via another admin won't work
         # since we can't login as the demoted user. The self-protection already covers this.
 
